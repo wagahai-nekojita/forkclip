@@ -1,0 +1,34 @@
+# macOS metadata
+.DS_Store
+
+# SwiftPM / Xcode build output and user state
+.build/
+Packages/
+DerivedData/
+xcuserdata/
+.swiftpm/configuration/registries.json
+.swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
+
+# Local credentials
+.netrc
+.env
+.env.*
+
+# Generated app bundles and binaries
+Forkclip.app/
+*.app/
+*_Binary
+
+# SwiftPM / Xcode generated state
+.swiftpm/
+**/.swiftpm/
+
+# Local clipboard data and import/export dumps
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*_history.json
+paste_migration_data.json
+
+# Local logs
+*.log

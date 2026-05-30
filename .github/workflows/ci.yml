@@ -1,0 +1,153 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Detect validation scope
+    runs-on: ubuntu-latest
+    outputs:
+      swift_required: ${{ steps.scope.outputs.swift_required }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: ${{ github.event_name == 'pull_request' && 0 || 2 }}
+
+      - name: Detect changed files
+        id: scope
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            range="origin/${GITHUB_BASE_REF}...HEAD"
+          elif [[ -n "${BEFORE_SHA:-}" && ! "$BEFORE_SHA" =~ ^0+$ ]] && git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+            range="${BEFORE_SHA}..${GITHUB_SHA}"
+          elif git rev-parse --verify HEAD^ >/dev/null 2>&1; then
+            range="HEAD^..HEAD"
+          else
+            range=""
+          fi
+
+          if [[ -n "$range" ]]; then
+            git diff --name-only "$range" > changed-files.txt
+          else
+            git ls-files > changed-files.txt
+          fi
+
+          if grep -Eq '^(Forkclip/|Package.swift$|Package.resolved$|\.github/workflows/ci\.yml$)' changed-files.txt; then
+            echo "swift_required=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "swift_required=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  swift-validation:
+    name: Swift validation
+    needs: changes
+    if: needs.changes.outputs.swift_required == 'true'
+    runs-on: macos-26
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: ${{ github.event_name == 'pull_request' && 0 || 2 }}
+
+      - name: Print toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: Check script syntax
+        run: |
+          zsh -n \
+            Forkclip/scripts/build-and-refresh-app.sh \
+            Forkclip/scripts/install-to-applications.sh \
+            Forkclip/scripts/run-xcode-tests.sh \
+            Forkclip/scripts/smoke-check.sh
+
+      - name: Build Swift package
+        working-directory: Forkclip
+        env:
+          CLANG_MODULE_CACHE_PATH: /tmp/clang-module-cache
+          SWIFTPM_ENABLE_PLUGINS: "0"
+        run: |
+          swift build --scratch-path /tmp/forkclip-ci-build
+
+      - name: Test Swift package
+        working-directory: Forkclip
+        env:
+          CLANG_MODULE_CACHE_PATH: /tmp/clang-module-cache
+          SWIFTPM_ENABLE_PLUGINS: "0"
+        run: |
+          swift test --scratch-path /tmp/forkclip-ci-test-build
+
+  ci-gate:
+    name: CI gate
+    needs:
+      - changes
+      - swift-validation
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: ${{ github.event_name == 'pull_request' && 0 || 2 }}
+
+      - name: Check diff whitespace
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            git diff --check "origin/${GITHUB_BASE_REF}...HEAD"
+          elif [[ -n "${BEFORE_SHA:-}" && ! "$BEFORE_SHA" =~ ^0+$ ]] && git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+            git diff --check "${BEFORE_SHA}..${GITHUB_SHA}"
+          elif git rev-parse --verify HEAD^ >/dev/null 2>&1; then
+            git diff --check HEAD^..HEAD
+          else
+            if git grep -n -I '[[:blank:]]$' -- . ':!*.png' ':!*.icns' ':!*.wav'; then
+              echo "Trailing whitespace found." >&2
+              exit 1
+            fi
+          fi
+
+      - name: Verify required validation
+        env:
+          CHANGE_RESULT: ${{ needs.changes.result }}
+          SWIFT_REQUIRED: ${{ needs.changes.outputs.swift_required }}
+          SWIFT_RESULT: ${{ needs.swift-validation.result }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$CHANGE_RESULT" != "success" ]]; then
+            echo "Change detection did not succeed: $CHANGE_RESULT" >&2
+            exit 1
+          fi
+
+          if [[ "$SWIFT_REQUIRED" == "true" && "$SWIFT_RESULT" != "success" ]]; then
+            echo "Swift validation was required but finished with: $SWIFT_RESULT" >&2
+            exit 1
+          fi
+
+          if [[ "$SWIFT_REQUIRED" != "true" ]]; then
+            echo "Swift validation not required for this change set."
+          fi
