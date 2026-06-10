@@ -1,0 +1,1 @@
+../../../.claude/skills/promotion-check/SKILL.md
