@@ -469,13 +469,18 @@ class ClipboardManager: ObservableObject {
             return
         }
         let captureDate = Date()
+        let isSecret = capture.plainText.map(security.isLikelySecret) ?? false
         if capture.isPlainTextOnly,
-           let updatedItem = await store.recordDuplicateCapture(
+           var updatedItem = await store.recordDuplicateCapture(
                 content: previewText,
                 primaryContentType: capture.primaryContentType,
                 bundleID: bundleID,
                 at: captureDate
            ) {
+            if updatedItem.isSecret != isSecret,
+               await store.updateSecretState(for: updatedItem.id, isSecret: isSecret) {
+                updatedItem.isSecret = isSecret
+            }
             lastSaveStatus = .duplicateRecorded
             lastSaveError = nil
             payloadCache[updatedItem.id] = capture.payloads
@@ -483,7 +488,6 @@ class ClipboardManager: ObservableObject {
             return
         }
 
-        let isSecret = capture.plainText.map(security.isLikelySecret) ?? false
         let newItem = ClipboardItem(
             id: UUID(),
             content: previewText,
@@ -534,8 +538,17 @@ class ClipboardManager: ObservableObject {
     }
 
     private func loadHistory() async {
+        let fetchedItems = await store.fetchAll()
+        await applyFetchedHistory(fetchedItems)
+    }
+
+    func reclassifySecretStateForCurrentRules() async {
         var fetchedItems = await store.fetchAll()
         await reclassifySecretStateIfNeeded(for: &fetchedItems)
+        await applyFetchedHistory(fetchedItems)
+    }
+
+    private func applyFetchedHistory(_ fetchedItems: [ClipboardItem]) async {
         var fetchedPayloads: [UUID: [ClipboardPayload]] = [:]
         for item in fetchedItems {
             fetchedPayloads[item.id] = await store.payloads(for: item.id)
