@@ -65,12 +65,36 @@ struct ClipboardRetentionPolicy: Codable, Equatable, Sendable {
     }
 }
 
+struct SQLiteConnectionPragmas: Equatable, Sendable {
+    let journalMode: String
+    let busyTimeoutMilliseconds: Int
+}
+
+private enum DatabaseConnectionPragmaError: LocalizedError, Equatable, Sendable {
+    case invalidValue(name: String, value: String)
+    case unexpectedJournalMode(expected: String, actual: String)
+    case unexpectedBusyTimeout(expected: Int, actual: Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidValue(let name, let value):
+            return "SQLite PRAGMA \(name) returned unsupported value: \(value)."
+        case .unexpectedJournalMode(let expected, let actual):
+            return "SQLite PRAGMA journal_mode expected \(expected), got \(actual)."
+        case .unexpectedBusyTimeout(let expected, let actual):
+            return "SQLite PRAGMA busy_timeout expected \(expected), got \(actual)."
+        }
+    }
+}
+
 actor DatabaseManager {
     nonisolated static let shared = DatabaseManager(
         databaseURL: nil,
         retentionPolicy: .load(),
         security: SecurityManager.shared
     )
+    private static let expectedSQLiteJournalMode = "wal"
+    private static let sqliteBusyTimeoutMilliseconds = 5_000
     private let databaseURLOverride: URL?
     private let security: ClipboardCryptographyProviding
     private var retentionPolicy: ClipboardRetentionPolicy
@@ -142,6 +166,7 @@ actor DatabaseManager {
             let databaseURL = try currentDatabaseURL()
             let openedDatabase = try Connection(databaseURL.path)
             try AppPaths.applyOwnerOnlyFilePermissions(to: databaseURL)
+            try configureConnectionPragmas(in: openedDatabase)
             AppLogger.database.notice("Database opened at \(databaseURL.path, privacy: .public)")
 
             try SchemaMigrator(security: security).migrate(in: openedDatabase)
@@ -154,6 +179,14 @@ actor DatabaseManager {
             databaseStatus = .failed
             AppLogger.database.error("Database setup error: \(String(describing: error), privacy: .public)")
         }
+    }
+
+    func connectionPragmas() throws -> SQLiteConnectionPragmas {
+        ensureDatabaseSetup()
+        guard let db else {
+            throw ClipboardPersistenceError.databaseUnavailable
+        }
+        return try readConnectionPragmas(in: db)
     }
 
     func saveItem(_ item: ClipboardItem, originBundleID: String?, secret: Bool, migrated: Bool = false) async throws {
@@ -704,6 +737,68 @@ actor DatabaseManager {
             return databaseURLOverride
         }
         return try AppPaths.databaseURL()
+    }
+
+    private func configureConnectionPragmas(in db: Connection) throws {
+        let appliedJournalMode = try setJournalModeToWAL(in: db)
+        guard appliedJournalMode.lowercased() == Self.expectedSQLiteJournalMode else {
+            throw DatabaseConnectionPragmaError.unexpectedJournalMode(
+                expected: Self.expectedSQLiteJournalMode,
+                actual: appliedJournalMode
+            )
+        }
+
+        try db.run("PRAGMA busy_timeout = \(Self.sqliteBusyTimeoutMilliseconds)")
+        let appliedBusyTimeout = try busyTimeout(in: db)
+        guard appliedBusyTimeout == Self.sqliteBusyTimeoutMilliseconds else {
+            throw DatabaseConnectionPragmaError.unexpectedBusyTimeout(
+                expected: Self.sqliteBusyTimeoutMilliseconds,
+                actual: appliedBusyTimeout
+            )
+        }
+    }
+
+    private func readConnectionPragmas(in db: Connection) throws -> SQLiteConnectionPragmas {
+        SQLiteConnectionPragmas(
+            journalMode: try journalMode(in: db),
+            busyTimeoutMilliseconds: try busyTimeout(in: db)
+        )
+    }
+
+    private func setJournalModeToWAL(in db: Connection) throws -> String {
+        let value = try db.scalar("PRAGMA journal_mode = WAL")
+        guard let journalMode = value as? String else {
+            throw DatabaseConnectionPragmaError.invalidValue(
+                name: "journal_mode",
+                value: String(describing: value)
+            )
+        }
+        return journalMode
+    }
+
+    private func journalMode(in db: Connection) throws -> String {
+        let value = try db.scalar("PRAGMA journal_mode")
+        guard let journalMode = value as? String else {
+            throw DatabaseConnectionPragmaError.invalidValue(
+                name: "journal_mode",
+                value: String(describing: value)
+            )
+        }
+        return journalMode
+    }
+
+    private func busyTimeout(in db: Connection) throws -> Int {
+        let value = try db.scalar("PRAGMA busy_timeout")
+        if let intValue = value as? Int64 {
+            return Int(intValue)
+        }
+        if let intValue = value as? Int {
+            return intValue
+        }
+        throw DatabaseConnectionPragmaError.invalidValue(
+            name: "busy_timeout",
+            value: String(describing: value)
+        )
     }
 
     private func payloadInsert(for payload: ClipboardPayload, itemID: UUID) throws -> PendingPayloadInsert {
