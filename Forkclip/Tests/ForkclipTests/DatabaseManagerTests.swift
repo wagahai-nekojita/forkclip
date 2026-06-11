@@ -130,6 +130,36 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(try userVersion(in: db), SchemaMigrator.currentSchemaVersion)
     }
 
+    func testNewDatabaseCreatesQueryPathIndexes() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let databaseURL = tempDirectory.appendingPathComponent("forkclip-test.sqlite")
+        let manager = makeDatabaseManager(databaseURL: databaseURL)
+        _ = await manager.diagnosticsSnapshot()
+        let db = try Connection(databaseURL.path)
+
+        try assertQueryPathIndexes(in: db)
+    }
+
+    func testVersionTenDatabaseMigratesQueryPathIndexes() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let databaseURL = tempDirectory.appendingPathComponent("forkclip-test.sqlite")
+        let db = try Connection(databaseURL.path)
+        try createSchemaVersionTenTables(in: db)
+        try db.run("PRAGMA user_version = 10")
+
+        let manager = makeDatabaseManager(databaseURL: databaseURL)
+        _ = await manager.diagnosticsSnapshot()
+
+        XCTAssertEqual(try userVersion(in: db), SchemaMigrator.currentSchemaVersion)
+        try assertQueryPathIndexes(in: db)
+    }
+
     func testDatabaseConnectionAppliesWALAndBusyTimeoutPragmas() async throws {
         let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
@@ -1314,6 +1344,165 @@ final class DatabaseManagerTests: XCTestCase {
 
     private func userVersion(in db: Connection) throws -> Int {
         let value = try db.scalar("PRAGMA user_version")
+        if let intValue = value as? Int64 {
+            return Int(intValue)
+        }
+        if let intValue = value as? Int {
+            return intValue
+        }
+        return 0
+    }
+
+    private struct ExpectedSchemaIndex {
+        let name: String
+        let table: String
+        let terms: [ExpectedSchemaIndexTerm]
+    }
+
+    private struct ExpectedSchemaIndexTerm {
+        let column: String
+        let descending: Bool
+    }
+
+    private func expectedQueryPathIndexes() -> [ExpectedSchemaIndex] {
+        [
+            ExpectedSchemaIndex(
+                name: "idx_clipboard_payloads_item_id_rank",
+                table: "clipboard_payloads",
+                terms: [
+                    ExpectedSchemaIndexTerm(column: "item_id", descending: false),
+                    ExpectedSchemaIndexTerm(column: "rank", descending: false)
+                ]
+            ),
+            ExpectedSchemaIndex(
+                name: "idx_clipboard_item_folders_item_id_folder_id",
+                table: "clipboard_item_folders",
+                terms: [
+                    ExpectedSchemaIndexTerm(column: "item_id", descending: false),
+                    ExpectedSchemaIndexTerm(column: "folder_id", descending: false)
+                ]
+            ),
+            ExpectedSchemaIndex(
+                name: "idx_clipboard_item_folders_folder_id",
+                table: "clipboard_item_folders",
+                terms: [
+                    ExpectedSchemaIndexTerm(column: "folder_id", descending: false)
+                ]
+            ),
+            ExpectedSchemaIndex(
+                name: "idx_clipboard_items_favorite_capture_order",
+                table: "clipboard_items",
+                terms: [
+                    ExpectedSchemaIndexTerm(column: "is_favorite", descending: false),
+                    ExpectedSchemaIndexTerm(column: "last_captured_at", descending: true),
+                    ExpectedSchemaIndexTerm(column: "timestamp", descending: true)
+                ]
+            ),
+            ExpectedSchemaIndex(
+                name: "idx_clipboard_items_usage_order",
+                table: "clipboard_items",
+                terms: [
+                    ExpectedSchemaIndexTerm(column: "usage_count", descending: true),
+                    ExpectedSchemaIndexTerm(column: "last_used_at", descending: true),
+                    ExpectedSchemaIndexTerm(column: "last_captured_at", descending: true),
+                    ExpectedSchemaIndexTerm(column: "timestamp", descending: true)
+                ]
+            )
+        ]
+    }
+
+    private func assertQueryPathIndexes(
+        in db: Connection,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        for index in expectedQueryPathIndexes() {
+            let indexCount = try integerScalar(
+                "SELECT COUNT(*) FROM pragma_index_list('\(index.table)') WHERE name = '\(index.name)'",
+                in: db
+            )
+            XCTAssertEqual(indexCount, 1, "\(index.name) should exist on \(index.table)", file: file, line: line)
+
+            let termCount = try integerScalar(
+                "SELECT COUNT(*) FROM pragma_index_xinfo('\(index.name)') WHERE key = 1",
+                in: db
+            )
+            XCTAssertEqual(termCount, index.terms.count, "\(index.name) should have expected key columns", file: file, line: line)
+
+            for (seqno, term) in index.terms.enumerated() {
+                let descending = term.descending ? 1 : 0
+                let matchingTermCount = try integerScalar(
+                    """
+                    SELECT COUNT(*) FROM pragma_index_xinfo('\(index.name)')
+                    WHERE key = 1
+                      AND seqno = \(seqno)
+                      AND name = '\(term.column)'
+                      AND "desc" = \(descending)
+                    """,
+                    in: db
+                )
+                XCTAssertEqual(
+                    matchingTermCount,
+                    1,
+                    "\(index.name) should include \(term.column) at seqno \(seqno)",
+                    file: file,
+                    line: line
+                )
+            }
+        }
+    }
+
+    private func createSchemaVersionTenTables(in db: Connection) throws {
+        try db.run("""
+            CREATE TABLE clipboard_items (
+                id BLOB PRIMARY KEY NOT NULL,
+                content TEXT NOT NULL,
+                display_title TEXT,
+                timestamp REAL NOT NULL,
+                bundle_id TEXT,
+                is_secret INTEGER NOT NULL,
+                is_favorite INTEGER NOT NULL DEFAULT 0,
+                usage_count INTEGER NOT NULL DEFAULT 0,
+                last_used_at REAL,
+                capture_count INTEGER NOT NULL DEFAULT 1,
+                last_captured_at REAL,
+                primary_content_type TEXT NOT NULL DEFAULT 'plainText',
+                migrated_from_legacy INTEGER NOT NULL DEFAULT 0
+            )
+            """)
+        try db.run("""
+            CREATE TABLE clipboard_payloads (
+                id BLOB PRIMARY KEY NOT NULL,
+                item_id BLOB NOT NULL,
+                content_type TEXT NOT NULL,
+                pasteboard_type TEXT NOT NULL DEFAULT '\(NSPasteboard.PasteboardType.string.rawValue)',
+                encrypted_data TEXT NOT NULL,
+                byte_size INTEGER NOT NULL DEFAULT 0,
+                preview TEXT,
+                rank INTEGER NOT NULL DEFAULT 0
+            )
+            """)
+        try db.run("""
+            CREATE TABLE clipboard_folders (
+                id BLOB PRIMARY KEY NOT NULL,
+                name TEXT NOT NULL,
+                color TEXT NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )
+            """)
+        try db.run("""
+            CREATE TABLE clipboard_item_folders (
+                item_id BLOB NOT NULL,
+                folder_id BLOB NOT NULL,
+                assigned_at REAL NOT NULL
+            )
+            """)
+    }
+
+    private func integerScalar(_ sql: String, in db: Connection) throws -> Int {
+        let value = try db.scalar(sql)
         if let intValue = value as? Int64 {
             return Int(intValue)
         }
