@@ -81,6 +81,7 @@ Forkclip/scripts/measure-large-history-performance.sh
 ```
 
 Use this when measuring dashboard filtering and frequent-item ordering against the representative large-history fixture. It does not measure SwiftUI redraw, persistence fetches, or image thumbnail decoding.
+It also prints a deterministic persisted reload measurement against an encrypted SQLite fixture. Treat that persisted reload average as a local comparison point, not an absolute CI performance threshold.
 
 ## Internal Agent Workflow
 
