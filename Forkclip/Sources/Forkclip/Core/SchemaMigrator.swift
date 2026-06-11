@@ -20,7 +20,7 @@ enum SchemaMigrationError: LocalizedError, Equatable {
 }
 
 struct SchemaMigrator {
-    static let currentSchemaVersion = 10
+    static let currentSchemaVersion = 11
     private let security: ClipboardCryptographyProviding
 
     private let items = Table("clipboard_items")
@@ -84,6 +84,7 @@ struct SchemaMigrator {
             if version < 8 { try migrateLegacyPlainTextPayloadEncodingIfNeeded(in: db) }
             if version < 9 { try addCaptureColumnsIfNeeded(in: db) }
             if version < 10 { try addDisplayTitleColumnIfNeeded(in: db) }
+            if version < 11 { try addQueryPathIndexesIfNeeded(in: db) }
 
             try setUserVersion(Self.currentSchemaVersion, in: db)
         }
@@ -146,6 +147,29 @@ struct SchemaMigrator {
             t.column(itemFolderFolderID)
             t.column(itemFolderAssignedAt)
         })
+    }
+
+    private func addQueryPathIndexesIfNeeded(in db: Connection) throws {
+        try db.run("""
+            CREATE INDEX IF NOT EXISTS idx_clipboard_payloads_item_id_rank
+            ON clipboard_payloads(item_id, rank)
+            """)
+        try db.run("""
+            CREATE INDEX IF NOT EXISTS idx_clipboard_item_folders_item_id_folder_id
+            ON clipboard_item_folders(item_id, folder_id)
+            """)
+        try db.run("""
+            CREATE INDEX IF NOT EXISTS idx_clipboard_item_folders_folder_id
+            ON clipboard_item_folders(folder_id)
+            """)
+        try db.run("""
+            CREATE INDEX IF NOT EXISTS idx_clipboard_items_favorite_capture_order
+            ON clipboard_items(is_favorite, last_captured_at DESC, timestamp DESC)
+            """)
+        try db.run("""
+            CREATE INDEX IF NOT EXISTS idx_clipboard_items_usage_order
+            ON clipboard_items(usage_count DESC, last_used_at DESC, last_captured_at DESC, timestamp DESC)
+            """)
     }
 
     private func addFavoriteColumnIfNeeded(in db: Connection) throws {
