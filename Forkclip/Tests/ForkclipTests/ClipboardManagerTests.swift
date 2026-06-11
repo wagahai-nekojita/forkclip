@@ -39,6 +39,63 @@ final class ClipboardManagerTests: XCTestCase {
         XCTAssertEqual(feedbackEvents, [.externalCaptureSaved])
     }
 
+    func testNewCaptureDoesNotRefetchCachedRetainedPayloads() async throws {
+        let pasteboard = FakePasteboard(changeCount: 0, stringValue: nil)
+        let store = FakeClipboardStore()
+        let retainedOne = ClipboardItem(id: UUID(), content: "retained one", timestamp: Date(timeIntervalSince1970: 1))
+        let retainedTwo = ClipboardItem(id: UUID(), content: "retained two", timestamp: Date(timeIntervalSince1970: 2))
+        store.seedItems([retainedOne, retainedTwo], payloads: [
+            retainedOne.id: [.plainText("retained one")],
+            retainedTwo.id: [.plainText("retained two")]
+        ])
+        let manager = await makeManager(pasteboard: pasteboard, store: store)
+        XCTAssertEqual(Set(store.fetchedPayloadItemIDs), [retainedOne.id, retainedTwo.id])
+
+        store.resetPayloadFetchTracking()
+        pasteboard.write("new capture")
+        await manager.pollClipboardForTests()
+
+        XCTAssertTrue(store.fetchedPayloadItemIDs.isEmpty)
+        XCTAssertEqual(manager.items.first?.content, "new capture")
+        XCTAssertEqual(manager.visibleItems.first?.content, "new capture")
+        XCTAssertEqual(DashboardContentScope.text.filteredItems(from: manager.visibleItems).first?.content, "new capture")
+
+        let captured = try XCTUnwrap(manager.items.first)
+        await manager.copyToClipboard(captured)
+
+        XCTAssertEqual(pasteboard.stringValue, "new capture")
+        XCTAssertTrue(store.fetchedPayloadItemIDs.isEmpty)
+    }
+
+    func testHistoryRefreshFetchesOnlyMissingPayloads() async throws {
+        let pasteboard = FakePasteboard(changeCount: 0, stringValue: nil)
+        let store = FakeClipboardStore()
+        let cached = ClipboardItem(id: UUID(), content: "cached item", timestamp: Date(timeIntervalSince1970: 1))
+        let missing = ClipboardItem(id: UUID(), content: "missing item", timestamp: Date(timeIntervalSince1970: 2))
+        store.seedItems([cached], payloads: [
+            cached.id: [.plainText("cached payload")]
+        ])
+        let manager = await makeManager(pasteboard: pasteboard, store: store)
+
+        store.seedItems([missing, cached], payloads: [
+            cached.id: [.plainText("cached payload")],
+            missing.id: [.plainText("missing payload")]
+        ])
+        store.resetPayloadFetchTracking()
+
+        await manager.reclassifySecretStateForCurrentRules()
+
+        XCTAssertEqual(store.fetchedPayloadItemIDs, [missing.id])
+        XCTAssertEqual(manager.items.map(\.id), [missing.id, cached.id])
+
+        await manager.copyToClipboard(cached)
+        XCTAssertEqual(pasteboard.stringValue, "cached payload")
+
+        await manager.copyToClipboard(missing)
+        XCTAssertEqual(pasteboard.stringValue, "missing payload")
+        XCTAssertEqual(store.fetchedPayloadItemIDs, [missing.id])
+    }
+
     func testFormattedNormalTextSavesAsNonSecretItem() async throws {
         let pasteboard = FakePasteboard(changeCount: 0, stringValue: nil)
         let store = FakeClipboardStore()
@@ -1722,6 +1779,7 @@ private final class FakeClipboardStore: ClipboardStore, @unchecked Sendable {
     private(set) var recoverCallCount = 0
     private(set) var savedItems: [ClipboardItem] = []
     private(set) var savedPayloads: [UUID: [ClipboardPayload]] = [:]
+    private(set) var fetchedPayloadItemIDs: [UUID] = []
     private(set) var secretStateUpdates: [(itemID: UUID, isSecret: Bool)] = []
 
     func saveItem(_ item: ClipboardItem, originBundleID: String?, secret: Bool, migrated: Bool) async throws {
@@ -1735,7 +1793,8 @@ private final class FakeClipboardStore: ClipboardStore, @unchecked Sendable {
     }
 
     func payloads(for itemID: UUID) async -> [ClipboardPayload] {
-        savedPayloads[itemID] ?? []
+        fetchedPayloadItemIDs.append(itemID)
+        return savedPayloads[itemID] ?? []
     }
 
     func deleteItem(withID itemID: UUID) async {
@@ -1847,6 +1906,10 @@ private final class FakeClipboardStore: ClipboardStore, @unchecked Sendable {
     func savedPayloadsForFirstItem() -> [ClipboardPayload] {
         guard let itemID = savedItems.first?.id else { return [] }
         return savedPayloads[itemID] ?? []
+    }
+
+    func resetPayloadFetchTracking() {
+        fetchedPayloadItemIDs = []
     }
 
     func diagnosticsSnapshot() async -> DiagnosticsSnapshot {

@@ -549,11 +549,12 @@ class ClipboardManager: ObservableObject {
     }
 
     private func applyFetchedHistory(_ fetchedItems: [ClipboardItem]) async {
-        var fetchedPayloads: [UUID: [ClipboardPayload]] = [:]
+        let fetchedItemIDs = Set(fetchedItems.map(\.id))
+        payloadCache = payloadCache.filter { fetchedItemIDs.contains($0.key) }
         for item in fetchedItems {
-            fetchedPayloads[item.id] = await store.payloads(for: item.id)
+            guard payloadCache[item.id] == nil else { continue }
+            payloadCache[item.id] = await store.payloads(for: item.id)
         }
-        payloadCache = fetchedPayloads
         self.items = fetchedItems
         pruneImageThumbnailCache()
         await refreshDiagnostics()
