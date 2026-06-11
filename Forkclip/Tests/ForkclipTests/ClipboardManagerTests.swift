@@ -88,29 +88,68 @@ final class ClipboardManagerTests: XCTestCase {
         XCTAssertEqual(DashboardContentScope.inferredScope(for: item), .privateItems)
     }
 
-    func testExistingFalsePositiveSecretItemIsReclassifiedOnLoad() async throws {
+    func testLoadHistoryDoesNotReclassifyExistingItems() async throws {
+        let pasteboard = FakePasteboard(changeCount: 0, stringValue: nil)
+        let store = FakeClipboardStore()
+        let firstItem = ClipboardItem(
+            id: UUID(),
+            content: "secret-token-from-existing-history",
+            timestamp: Date(),
+            isSecret: false,
+            primaryContentType: .plainText
+        )
+        let secondItem = ClipboardItem(
+            id: UUID(),
+            content: "another-secret-token-from-existing-history",
+            timestamp: Date().addingTimeInterval(-1),
+            isSecret: false,
+            primaryContentType: .plainText
+        )
+        store.seedItems([firstItem, secondItem])
+        let security = FakeSecurityProvider()
+        security.secretDetector = { _ in true }
+
+        let manager = await makeManager(pasteboard: pasteboard, store: store, security: security)
+
+        XCTAssertEqual(manager.items.count, 2)
+        XCTAssertTrue(manager.items.allSatisfy { !$0.isSecret })
+        XCTAssertTrue(security.secretDetectionInputs.isEmpty)
+        XCTAssertTrue(store.secretStateUpdates.isEmpty)
+        XCTAssertTrue(store.savedItems.allSatisfy { !$0.isSecret })
+    }
+
+    func testExplicitSecretRuleReclassificationUpdatesExistingItems() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
         let pasteboard = FakePasteboard(changeCount: 0, stringValue: nil)
         let store = FakeClipboardStore()
         let item = ClipboardItem(
             id: UUID(),
-            content: """
-            ほとんどが非公開になってしまっている。Atlas/Codex/Claude由来の履歴がマスク表示になっている。
-            Example token=abc123DEF456!@#7890 appears inside prose, but this whole note is not a credential.
-            """,
+            content: "DEPLOY-ABCDEF1234567890",
             timestamp: Date(),
-            isSecret: true,
+            isSecret: false,
             primaryContentType: .plainText
         )
         store.seedItems([item])
-        let security = FakeSecurityProvider()
-        security.secretDetector = { SecurityManager.shared.isLikelySecret($0) }
-
+        let security = SecurityManager(
+            customSecretPatternsURL: tempDirectory.appendingPathComponent("custom_secret_patterns.json"),
+            keyStorage: SecurityManager.InMemoryKeyStorage()
+        )
         let manager = await makeManager(pasteboard: pasteboard, store: store, security: security)
+        XCTAssertFalse(try XCTUnwrap(manager.items.first).isSecret)
 
-        let loadedItem = try XCTUnwrap(manager.items.first)
-        XCTAssertFalse(loadedItem.isSecret)
-        XCTAssertFalse(try XCTUnwrap(store.savedItems.first).isSecret)
-        XCTAssertNotEqual(DashboardContentScope.inferredScope(for: loadedItem), .privateItems)
+        try security.saveCustomSecretPatterns([
+            CustomSecretPattern(name: "Internal deploy token", pattern: #"DEPLOY-[A-Z0-9]{16}"#)
+        ])
+        await manager.reclassifySecretStateForCurrentRules()
+
+        let reclassifiedItem = try XCTUnwrap(manager.items.first)
+        XCTAssertTrue(reclassifiedItem.isSecret)
+        XCTAssertEqual(store.secretStateUpdates.count, 1)
+        XCTAssertTrue(try XCTUnwrap(store.savedItems.first).isSecret)
+        XCTAssertEqual(DashboardContentScope.inferredScope(for: reclassifiedItem), .privateItems)
     }
 
     func testExistingHighConfidenceSecretStaysSecretOnLoad() async throws {
@@ -1683,6 +1722,7 @@ private final class FakeClipboardStore: ClipboardStore, @unchecked Sendable {
     private(set) var recoverCallCount = 0
     private(set) var savedItems: [ClipboardItem] = []
     private(set) var savedPayloads: [UUID: [ClipboardPayload]] = [:]
+    private(set) var secretStateUpdates: [(itemID: UUID, isSecret: Bool)] = []
 
     func saveItem(_ item: ClipboardItem, originBundleID: String?, secret: Bool, migrated: Bool) async throws {
         try await saveItem(item, payloads: [.plainText(item.content)], originBundleID: originBundleID, secret: secret, migrated: migrated)
@@ -1761,6 +1801,7 @@ private final class FakeClipboardStore: ClipboardStore, @unchecked Sendable {
 
     func updateSecretState(for itemID: UUID, isSecret: Bool) async -> Bool {
         guard let index = savedItems.firstIndex(where: { $0.id == itemID }) else { return false }
+        secretStateUpdates.append((itemID, isSecret))
         savedItems[index].isSecret = isSecret
         return true
     }
@@ -1853,6 +1894,7 @@ private final class FakeSecurityProvider: SecurityProviding {
     var lastError: SecurityManager.SecurityError?
     var blacklistedBundleIDs: Set<String> = []
     var secretDetector: (String) -> Bool = { $0.contains("secret") }
+    private(set) var secretDetectionInputs: [String] = []
 
     func isApplicationBlacklisted(_ bundleID: String?) -> Bool {
         guard let bundleID else { return false }
@@ -1867,7 +1909,8 @@ private final class FakeSecurityProvider: SecurityProviding {
     }
 
     func isLikelySecret(_ text: String) -> Bool {
-        secretDetector(text)
+        secretDetectionInputs.append(text)
+        return secretDetector(text)
     }
 
     func resetLastError() {
