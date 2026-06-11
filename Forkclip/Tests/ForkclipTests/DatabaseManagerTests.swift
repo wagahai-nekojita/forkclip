@@ -130,6 +130,20 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(try userVersion(in: db), SchemaMigrator.currentSchemaVersion)
     }
 
+    func testDatabaseConnectionAppliesWALAndBusyTimeoutPragmas() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let databaseURL = tempDirectory.appendingPathComponent("forkclip-test.sqlite")
+        let manager = makeDatabaseManager(databaseURL: databaseURL)
+
+        let pragmas = try await manager.connectionPragmas()
+
+        XCTAssertEqual(pragmas.journalMode.lowercased(), "wal")
+        XCTAssertEqual(pragmas.busyTimeoutMilliseconds, 5_000)
+    }
+
     func testFutureSchemaVersionIsRejectedWithoutDowngrade() async throws {
         let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)

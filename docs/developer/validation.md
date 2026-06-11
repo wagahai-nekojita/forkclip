@@ -40,6 +40,8 @@ Forkclip/scripts/build-and-refresh-app.sh
 
 The smoke check writes to the system clipboard, verifies the local SQLite database, and runs the native UI smoke hook for appearance, template menu icon, copy feedback enable/disable checks, and representative multiformat copyback checks. It is appropriate for runtime behavior changes when local side effects are acceptable.
 
+SQLite uses WAL mode. When removing a local smoke database, remove the database file and the matching `-wal` and `-shm` sidecar files together.
+
 The refresh script also creates or updates the local `Forkclip.app` bundle, bundles `docs/user` as `Contents/Resources/ForkclipUserDocs`, updates an existing `/Applications/Forkclip.app` when its bundled contents are stale, and verifies that the launched Forkclip process matches the refreshed binary hash before running smoke checks.
 
 Use `FORKCLIP_SMOKE_MODE=image` or `FORKCLIP_SMOKE_MODE=mixedImageFileURL` with `Forkclip/scripts/smoke-check.sh` to exercise image-only or CleanShot-style image plus file URL capture through the real system pasteboard and running monitor.
