@@ -32,14 +32,15 @@ Run from the repository root:
 Forkclip/scripts/measure-large-history-performance.sh
 ```
 
-The script runs `LargeHistoryPerformanceTests`, which measures dashboard paths against a 10,000-item mixed clipboard history fixture:
+The script runs `LargeHistoryPerformanceTests`, which measures dashboard paths against a 10,000-item mixed clipboard history fixture and persisted reload behavior against a 1,000-item encrypted SQLite fixture:
 
 - `DashboardContentScope`: filters the fixture across all dashboard content scopes.
 - `DashboardFrequentItems`: orders the fixture by usage and recency for the frequent-items strip.
+- `PersistentHistoryReload`: loads encrypted item rows, fetches each item's persisted payloads, decrypts payload data, and builds the same item-to-payload cache shape used by history reload.
 
 Baseline captured locally on 2026-05-10:
 
 - Dashboard scope filtering: 0.056 seconds average.
 - Frequent items ordering: 0.022 seconds average.
 
-These measurements cover in-memory dashboard filtering and ordering costs, not SwiftUI redraw, persistence fetches, or image thumbnail decoding. Treat regressions in these numbers as evidence to inspect dashboard classification and sorting before optimizing storage or UI rendering.
+The dashboard measurements cover in-memory filtering and ordering costs. The persisted reload measurement covers local SQLite fetches plus AES-GCM item and payload decryption; it does not measure SwiftUI redraw, real pasteboard access, or image thumbnail decoding. Treat the printed persisted reload average as a local comparison point, not an absolute CI performance threshold.
