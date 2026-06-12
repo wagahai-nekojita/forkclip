@@ -19,6 +19,8 @@ CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
 APP_STARTUP_SETTLE_SECONDS="${APP_STARTUP_SETTLE_SECONDS:-7}"
 SCRATCH_PATH="${SCRATCH_PATH:-/tmp/forkclip-build}"
 BUILD_BINARY="$SCRATCH_PATH/debug/Forkclip"
+BUILD_RESOURCE_BUNDLE="$SCRATCH_PATH/debug/Forkclip_Forkclip.bundle"
+APP_SWIFTPM_RESOURCE_BUNDLE="$APP_BUNDLE/Forkclip_Forkclip.bundle"
 APP_PROCESS_PATTERN="$APP_BINARY|Forkclip.app/Contents/MacOS/Forkclip"
 ASSET_ROOT="$PACKAGE_ROOT/Assets"
 PACKAGE_INFO_PLIST="$PACKAGE_ROOT/Info.plist"
@@ -128,6 +130,7 @@ registered_app_needs_update() {
     "Contents/Resources/AppMenuIconTemplate.png"
     "Contents/Resources/ClipboardFeedbackClick.wav"
     "Contents/Resources/ForkclipUserDocs"
+    "Forkclip_Forkclip.bundle"
   )
 
   local relative_path
@@ -189,6 +192,10 @@ if [[ ! -x "$BUILD_BINARY" ]]; then
   echo "Built binary not found: $BUILD_BINARY" >&2
   exit 1
 fi
+if [[ ! -d "$BUILD_RESOURCE_BUNDLE" ]]; then
+  echo "SwiftPM resource bundle not found: $BUILD_RESOURCE_BUNDLE" >&2
+  exit 1
+fi
 
 existing_pid="$(pgrep -af "$APP_PROCESS_PATTERN" | awk 'NR==1 {print $1}' || true)"
 if [[ -n "${existing_pid:-}" ]]; then
@@ -211,6 +218,7 @@ fi
 if [[ -f "$ASSET_ROOT/ClipboardFeedbackClick.wav" ]]; then
   cp "$ASSET_ROOT/ClipboardFeedbackClick.wav" "$APP_RESOURCES_DIR/ClipboardFeedbackClick.wav"
 fi
+ditto "$BUILD_RESOURCE_BUNDLE" "$APP_SWIFTPM_RESOURCE_BUNDLE"
 if [[ -d "$USER_DOCS_DIR" ]]; then
   echo "Bundling user docs..."
   mkdir -p "$APP_USER_DOCS_DIR"

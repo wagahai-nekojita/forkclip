@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>diagnostics.panel.backupAndReset.button</key>
+	<string>バックアップして初期化</string>
+	<key>diagnostics.panel.backupAndReset.description</key>
+	<string>既存 DB をバックアップし、新しい暗号鍵で履歴 DB を初期化します。</string>
+	<key>diagnostics.panel.databasePath.label</key>
+	<string>データベースパス</string>
+	<key>diagnostics.panel.databaseStatus.label</key>
+	<string>データベース状態</string>
+	<key>diagnostics.panel.fetchFailureCount.format</key>
+	<string>%d 件</string>
+	<key>diagnostics.panel.fetchFailureCount.label</key>
+	<string>復号できない履歴</string>
+	<key>diagnostics.panel.keychainStatus.label</key>
+	<string>Keychain 状態</string>
+	<key>diagnostics.panel.lastChangeCount.label</key>
+	<string>最終変更番号</string>
+	<key>diagnostics.panel.lastProcessedAt.label</key>
+	<string>最終処理時刻</string>
+	<key>diagnostics.panel.latestSecurityError.label</key>
+	<string>最新セキュリティエラー</string>
+	<key>diagnostics.panel.monitorStatus.label</key>
+	<string>監視状態</string>
+	<key>diagnostics.panel.none.value</key>
+	<string>なし</string>
+	<key>diagnostics.panel.notCreated.value</key>
+	<string>未作成</string>
+	<key>diagnostics.panel.recoveryBackup.label</key>
+	<string>復旧用バックアップ</string>
+	<key>diagnostics.panel.saveErrorDetail.label</key>
+	<string>保存エラー詳細</string>
+	<key>diagnostics.panel.saveResult.label</key>
+	<string>保存結果</string>
+	<key>diagnostics.panel.title</key>
+	<string>診断パネル</string>
+</dict>
+</plist>
