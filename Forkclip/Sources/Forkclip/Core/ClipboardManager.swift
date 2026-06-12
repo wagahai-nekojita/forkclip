@@ -325,17 +325,7 @@ class ClipboardManager: ObservableObject {
         guard item.primaryContentType == .image, !item.isSecret else {
             return nil
         }
-        if let cachedThumbnail = imageThumbnailCache[item.id] {
-            return cachedThumbnail
-        }
-        guard !imageThumbnailMisses.contains(item.id),
-              let imagePayload = payloadCache[item.id]?.first(where: { $0.contentType == .image }),
-              let thumbnail = NSImage(data: imagePayload.data) else {
-            imageThumbnailMisses.insert(item.id)
-            return nil
-        }
-        imageThumbnailCache[item.id] = thumbnail
-        return thumbnail
+        return imageThumbnailCache[item.id]
     }
 
     private func itemMatchesSelectedFolder(_ item: ClipboardItem) -> Bool {
@@ -486,7 +476,7 @@ class ClipboardManager: ObservableObject {
             }
             lastSaveStatus = .duplicateRecorded
             lastSaveError = nil
-            payloadCache[updatedItem.id] = capture.payloads
+            cacheCopyBackPayloads(capture.payloads, for: updatedItem.id)
             await loadHistory()
             return
         }
@@ -519,7 +509,10 @@ class ClipboardManager: ObservableObject {
 
         lastSaveStatus = .saveSucceeded
         lastSaveError = nil
-        payloadCache[newItem.id] = capture.payloads
+        if newItem.primaryContentType == .image {
+            prepareImageThumbnail(for: newItem.id, from: capture.payloads)
+        }
+        cacheCopyBackPayloads(capture.payloads, for: newItem.id)
         await loadHistory()
         feedbackHandler?(.externalCaptureSaved)
     }
@@ -555,8 +548,13 @@ class ClipboardManager: ObservableObject {
         let fetchedItemIDs = Set(fetchedItems.map(\.id))
         payloadCache = payloadCache.filter { fetchedItemIDs.contains($0.key) }
         for item in fetchedItems {
+            if item.primaryContentType == .image {
+                payloadCache.removeValue(forKey: item.id)
+                await prepareImageThumbnail(for: item)
+                continue
+            }
             guard payloadCache[item.id] == nil else { continue }
-            payloadCache[item.id] = await store.payloads(for: item.id)
+            cacheCopyBackPayloads(await store.payloads(for: item.id), for: item.id)
         }
         self.items = fetchedItems
         pruneImageThumbnailCache()
@@ -678,8 +676,41 @@ class ClipboardManager: ObservableObject {
             return cachedPayloads
         }
         let payloads = await store.payloads(for: itemID)
-        payloadCache[itemID] = payloads
+        cacheCopyBackPayloads(payloads, for: itemID)
         return payloads
+    }
+
+    private func cacheCopyBackPayloads(_ payloads: [ClipboardPayload], for itemID: UUID) {
+        if payloads.contains(where: { $0.contentType == .image }) {
+            payloadCache.removeValue(forKey: itemID)
+            return
+        }
+        payloadCache[itemID] = payloads
+    }
+
+    private func prepareImageThumbnail(for item: ClipboardItem) async {
+        guard item.primaryContentType == .image, !item.isSecret else {
+            imageThumbnailCache.removeValue(forKey: item.id)
+            imageThumbnailMisses.remove(item.id)
+            return
+        }
+        guard imageThumbnailCache[item.id] == nil,
+              !imageThumbnailMisses.contains(item.id) else {
+            return
+        }
+        let payloads = await store.payloads(for: item.id)
+        prepareImageThumbnail(for: item.id, from: payloads)
+    }
+
+    private func prepareImageThumbnail(for itemID: UUID, from payloads: [ClipboardPayload]) {
+        guard let imagePayload = payloads.first(where: { $0.contentType == .image }),
+              let thumbnail = ImageThumbnailGenerator.thumbnail(from: imagePayload.data) else {
+            imageThumbnailCache.removeValue(forKey: itemID)
+            imageThumbnailMisses.insert(itemID)
+            return
+        }
+        imageThumbnailCache[itemID] = thumbnail
+        imageThumbnailMisses.remove(itemID)
     }
 
     private func recordUse(for item: ClipboardItem) async {
@@ -925,6 +956,8 @@ class ClipboardManager: ObservableObject {
             await store.deleteItem(withID: itemID)
             folderState.itemFolderIDs.removeValue(forKey: itemID)
             payloadCache.removeValue(forKey: itemID)
+            imageThumbnailCache.removeValue(forKey: itemID)
+            imageThumbnailMisses.remove(itemID)
         }
         items.removeAll { idsToDelete.contains($0.id) }
         selectedItemIDs.removeAll()

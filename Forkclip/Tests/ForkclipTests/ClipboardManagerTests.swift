@@ -870,25 +870,32 @@ final class ClipboardManagerTests: XCTestCase {
         XCTAssertEqual(store.assignments[second.id], [folder.id])
     }
 
-    func testDeleteSelectedItemsRemovesItemsAndAssignments() async {
+    func testDeleteSelectedItemsRemovesItemsAssignmentsAndImageThumbnailCache() async throws {
         let pasteboard = FakePasteboard(changeCount: 0, stringValue: nil)
         let store = FakeClipboardStore()
         let folder = store.seedFolder(named: "Projects")
-        let manager = await makeManager(pasteboard: pasteboard, store: store)
         let first = ClipboardItem(id: UUID(), content: "one", timestamp: Date())
-        let second = ClipboardItem(id: UUID(), content: "two", timestamp: Date())
-        manager.items = [first, second]
-        store.seedItems([first, second])
+        let second = ClipboardItem(id: UUID(), content: "画像", timestamp: Date(), primaryContentType: .image)
+        let imageData = try makeThumbnailPNGData()
+        store.seedItems([first, second], payloads: [
+            second.id: [
+                ClipboardPayload(contentType: .image, pasteboardType: .png, data: imageData, preview: "画像", rank: 0)
+            ]
+        ])
         store.assignments[first.id] = [folder.id]
+        let manager = await makeManager(pasteboard: pasteboard, store: store)
         await manager.refreshFolders()
+        XCTAssertNotNil(manager.imageThumbnail(for: second))
 
         manager.toggleSelection(for: first)
+        manager.toggleSelection(for: second)
         await manager.deleteSelectedItems()
 
-        XCTAssertEqual(manager.items.map(\.content), ["two"])
-        XCTAssertEqual(store.savedItems.map(\.content), ["two"])
+        XCTAssertTrue(manager.items.isEmpty)
+        XCTAssertTrue(store.savedItems.isEmpty)
         XCTAssertNil(store.assignments[first.id])
         XCTAssertTrue(manager.selectedItemIDs.isEmpty)
+        XCTAssertNil(manager.imageThumbnail(for: second))
     }
 
     func testVisibleItemsReturnsAllItemsForWhitespaceSearch() async {
@@ -1232,6 +1239,51 @@ final class ClipboardManagerTests: XCTestCase {
         XCTAssertNotNil(thumbnail)
     }
 
+    func testImageThumbnailBoundsLargeImagePayload() async throws {
+        let pasteboard = FakePasteboard(changeCount: 0, stringValue: nil)
+        let store = FakeClipboardStore()
+        let item = ClipboardItem(id: UUID(), content: "画像", timestamp: Date(), primaryContentType: .image)
+        let imageData = try makeThumbnailPNGData(size: NSSize(width: 1200, height: 800))
+        store.seedItems([item], payloads: [
+            item.id: [
+                ClipboardPayload(contentType: .image, pasteboardType: .png, data: imageData, preview: "画像", rank: 0)
+            ]
+        ])
+        let manager = await makeManager(pasteboard: pasteboard, store: store)
+
+        let thumbnail = try XCTUnwrap(manager.imageThumbnail(for: item))
+        let cgImage = try XCTUnwrap(thumbnail.cgImage(forProposedRect: nil, context: nil, hints: nil))
+
+        XCTAssertLessThanOrEqual(max(cgImage.width, cgImage.height), ImageThumbnailGenerator.maxPixelSize)
+    }
+
+    func testImagePreviewDoesNotRetainFullPayloadForCopyCache() async throws {
+        let pasteboard = FakePasteboard(changeCount: 0, stringValue: nil)
+        let store = FakeClipboardStore()
+        let item = ClipboardItem(id: UUID(), content: "画像", timestamp: Date(), primaryContentType: .image)
+        let imageData = try makeThumbnailPNGData(size: NSSize(width: 640, height: 480))
+        store.seedItems([item], payloads: [
+            item.id: [
+                ClipboardPayload(contentType: .image, pasteboardType: .png, data: imageData, preview: "画像", rank: 0)
+            ]
+        ])
+        let manager = await makeManager(pasteboard: pasteboard, store: store)
+
+        XCTAssertEqual(store.fetchedPayloadItemIDs, [item.id])
+        store.resetPayloadFetchTracking()
+
+        XCTAssertNotNil(manager.imageThumbnail(for: item))
+        XCTAssertTrue(store.fetchedPayloadItemIDs.isEmpty)
+
+        await manager.copyToClipboard(item)
+        XCTAssertEqual(pasteboard.data(forType: .png), imageData)
+        XCTAssertEqual(store.fetchedPayloadItemIDs, [item.id])
+
+        store.resetPayloadFetchTracking()
+        await manager.copyToClipboard(item)
+        XCTAssertEqual(store.fetchedPayloadItemIDs, [item.id])
+    }
+
     func testImageThumbnailReturnsNilForNonImageItem() async throws {
         let pasteboard = FakePasteboard(changeCount: 0, stringValue: nil)
         let store = FakeClipboardStore()
@@ -1555,11 +1607,11 @@ final class ClipboardManagerTests: XCTestCase {
         return values
     }
 
-    private func makeThumbnailPNGData() throws -> Data {
-        let image = NSImage(size: NSSize(width: 2, height: 2))
+    private func makeThumbnailPNGData(size: NSSize = NSSize(width: 2, height: 2)) throws -> Data {
+        let image = NSImage(size: size)
         image.lockFocus()
         NSColor.systemBlue.setFill()
-        NSRect(x: 0, y: 0, width: 2, height: 2).fill()
+        NSRect(origin: .zero, size: size).fill()
         image.unlockFocus()
         let tiffData = try XCTUnwrap(image.tiffRepresentation)
         let bitmap = try XCTUnwrap(NSBitmapImageRep(data: tiffData))
