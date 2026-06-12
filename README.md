@@ -38,6 +38,7 @@ Clipboard history is useful, but clipboard data is often sensitive. Forkclip exp
 ## Features
 
 - Menu bar quick panel with horizontal, grid, and list layouts.
+- Global Quick Panel hotkey with visible registration status.
 - Dashboard window for dense browsing, filtering, inspection, and copy reuse.
 - Clipboard capture for plain text, URL text, file URLs, RTF, HTML, and common image payloads.
 - Search, source-app filtering, folders, Queue mode, and Quick/Favorite retention protection.
@@ -45,7 +46,7 @@ Clipboard history is useful, but clipboard data is often sensitive. Forkclip exp
 - Private mode to temporarily stop saving new clipboard changes.
 - Local encrypted SQLite persistence with a Keychain-backed symmetric key.
 - Likely-secret masking, app blacklist, concealed pasteboard marker handling, diagnostics, and recovery copy.
-- Settings for layout, panel placement, retention, startup behavior, feedback, and privacy.
+- Settings for layout, panel placement, Quick Panel hotkey status, retention, startup behavior, feedback, and privacy.
 
 ## Tech Stack
 

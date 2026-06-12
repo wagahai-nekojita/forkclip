@@ -6,7 +6,10 @@ struct ForkclipApp: App {
 
     var body: some Scene {
         Settings {
-            SettingsView(settingsStore: appDelegate.settingsStore)
+            SettingsView(
+                settingsStore: appDelegate.settingsStore,
+                hotKeyController: appDelegate.hotKeyController
+            )
         }
     }
 }

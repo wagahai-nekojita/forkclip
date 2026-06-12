@@ -19,6 +19,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var panelGlobalMouseDownMonitor: Any?
     private var appDeactivateObserver: NSObjectProtocol?
     let settingsStore = AppSettingsStore()
+    lazy var hotKeyController = GlobalHotKeyController { [weak self] in
+        self?.toggleWindow()
+    }
     private var cachedManager: ClipboardManager?
     var manager: ClipboardManager {
         if let cachedManager {
@@ -57,11 +60,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         manager.startMonitoring()
         AppLogger.app.notice("Clipboard monitoring start requested from AppDelegate.")
         observeSettingsChanges()
+        hotKeyController.register()
         AppLogger.app.notice("Application launch setup completed.")
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         stopPanelDismissMonitors()
+        hotKeyController.unregister()
         manager.stopMonitoring()
     }
 
@@ -105,8 +110,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         settingsItem.target = self
         menu.addItem(settingsItem)
         menu.addItem(.separator())
+        let hotKeyItem = NSMenuItem(title: statusMenuHotKeyTitle, action: nil, keyEquivalent: "")
+        hotKeyItem.isEnabled = false
+        menu.addItem(hotKeyItem)
+        if !hotKeyController.registrationState.isRegistered {
+            let retryItem = NSMenuItem(title: "ショートカットを再登録", action: #selector(registerGlobalHotKey(_:)), keyEquivalent: "")
+            retryItem.target = self
+            menu.addItem(retryItem)
+        }
+        menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "\(AppInfo.displayName) を終了", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         NSMenu.popUpContextMenu(menu, with: event, for: button)
+    }
+
+    @MainActor
+    private var statusMenuHotKeyTitle: String {
+        switch hotKeyController.registrationState {
+        case .registered:
+            return "Quick Panel ショートカット: \(hotKeyController.hotKey.displayName)"
+        case .failed(let status):
+            return "Quick Panel ショートカット未登録 (OSStatus \(status))"
+        case .notRegistered:
+            return "Quick Panel ショートカット未登録"
+        }
+    }
+
+    @objc @MainActor
+    func registerGlobalHotKey(_ sender: Any?) {
+        hotKeyController.register()
     }
 
     @MainActor
@@ -616,7 +647,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc @MainActor
     func showSettingsWindow(_ sender: Any?) {
         if settingsWindow == nil {
-            let settingsView = SettingsView(settingsStore: settingsStore)
+            let settingsView = SettingsView(settingsStore: settingsStore, hotKeyController: hotKeyController)
             let window = NSWindow(
                 contentRect: NSRect(x: 0, y: 0, width: 760, height: 540),
                 styleMask: [.titled, .closable, .miniaturizable, .resizable],

@@ -43,6 +43,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
 
 struct SettingsView: View {
     @ObservedObject var settingsStore: AppSettingsStore
+    @ObservedObject var hotKeyController: GlobalHotKeyController
     @StateObject private var launchAtLoginController = LaunchAtLoginController()
     @State private var selectedSection: SettingsSection = .appearance
     @State private var saveMessage: String?
@@ -194,6 +195,32 @@ struct SettingsView: View {
 
     private var panelPane: some View {
         VStack(spacing: 14) {
+            SettingsCard(title: "ショートカット", systemImage: "keyboard") {
+                SettingsRow(
+                    title: "Quick Panel",
+                    detail: "別のアプリを使用中でも履歴パネルを開閉します。"
+                ) {
+                    VStack(alignment: .trailing, spacing: 8) {
+                        SettingsBadge(text: hotKeyController.hotKey.displayName)
+                        SettingsBadge(text: hotKeyRegistrationStatusText, style: hotKeyRegistrationBadgeStyle)
+                    }
+                }
+
+                if case .failed(let status) = hotKeyController.registrationState {
+                    SettingsInfoCard(
+                        title: "ショートカットを登録できませんでした",
+                        message: "macOS が \(hotKeyController.hotKey.displayName) を拒否しました。ほかのアプリやシステム機能との競合を解消してから再登録してください。OSStatus: \(status)"
+                    )
+                }
+
+                HStack {
+                    Spacer()
+                    Button("再登録") {
+                        hotKeyController.register()
+                    }
+                }
+            }
+
             SettingsCard(title: "パネルサイズ", systemImage: "arrow.up.left.and.arrow.down.right") {
                 SettingsRow(title: "表示位置", detail: "履歴パネルを表示する画面端") {
                     Picker("", selection: binding(\.panelPlacement)) {
@@ -409,6 +436,28 @@ struct SettingsView: View {
     private var effectivePanelSize: CGSize {
         let visibleSize = NSScreen.main?.visibleFrame.size ?? CGSize(width: 1_440, height: 900)
         return settingsStore.settings.effectivePanelSize(for: visibleSize)
+    }
+
+    private var hotKeyRegistrationStatusText: String {
+        switch hotKeyController.registrationState {
+        case .notRegistered:
+            return "未登録"
+        case .registered:
+            return "登録済み"
+        case .failed:
+            return "登録失敗"
+        }
+    }
+
+    private var hotKeyRegistrationBadgeStyle: SettingsBadgeStyle {
+        switch hotKeyController.registrationState {
+        case .registered:
+            return .success
+        case .failed:
+            return .warning
+        case .notRegistered:
+            return .neutral
+        }
     }
 
     private var localizedLaunchAtLoginState: String {
@@ -695,6 +744,7 @@ private struct SettingsPrivacyStatusRow: View {
 private enum SettingsBadgeStyle {
     case neutral
     case success
+    case warning
 }
 
 private struct SettingsBadge: View {
@@ -717,6 +767,8 @@ private struct SettingsBadge: View {
             return .secondary
         case .success:
             return .green
+        case .warning:
+            return .orange
         }
     }
 
@@ -726,6 +778,8 @@ private struct SettingsBadge: View {
             return Color.secondary.opacity(0.12)
         case .success:
             return Color.green.opacity(0.14)
+        case .warning:
+            return Color.orange.opacity(0.14)
         }
     }
 }
