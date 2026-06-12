@@ -17,6 +17,7 @@ jobs:
   promotion-check:
     name: Promotion-check review
     runs-on: ubuntu-latest
+    if: ${{ github.event.pull_request.draft == false }}
     timeout-minutes: 20
     steps:
       - name: Check out trusted base
@@ -68,6 +69,7 @@ jobs:
 
             Put the full PR comment body in comment_markdown. Keep it under 6000 characters. It must start with "## Promotion-check review", include the result, checked anchors, failures, and unknowns, and state that this is judgment evidence; CI gate remains required deterministic evidence.
           claude_args: |
+            --model claude-sonnet-4-6
             --max-turns 8
             --allowedTools "Read,Grep,Glob"
             --json-schema '{"type":"object","additionalProperties":false,"properties":{"result":{"type":"string","enum":["pass","fail"]},"comment_markdown":{"type":"string"},"checked_anchors":{"type":"array","items":{"type":"string"}},"unknowns":{"type":"array","items":{"type":"string"}}},"required":["result","comment_markdown","checked_anchors","unknowns"]}'
