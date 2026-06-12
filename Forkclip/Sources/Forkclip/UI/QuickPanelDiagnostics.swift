@@ -7,7 +7,7 @@ struct DiagnosticsPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("診断パネル")
+                Text(DiagnosticsPanelStrings.title)
                     .font(.caption.bold())
                     .foregroundColor(ForkclipTheme.ink())
                 Spacer()
@@ -16,29 +16,29 @@ struct DiagnosticsPanel: View {
                     .foregroundColor(ForkclipTheme.ink(0.55))
             }
 
-            DiagnosticRow(label: "データベースパス", value: ClipboardStatusFormatter.databasePathText(diagnosticsState.diagnostics.databasePath))
-            DiagnosticRow(label: "データベース状態", value: ClipboardStatusFormatter.databaseText(diagnosticsState.diagnostics.databaseStatus))
-            DiagnosticRow(label: "Keychain 状態", value: ClipboardStatusFormatter.keyText(diagnosticsState.diagnostics.keyState))
-            DiagnosticRow(label: "監視状態", value: ClipboardStatusFormatter.monitorText(diagnosticsState.diagnostics.monitorState))
-            DiagnosticRow(label: "最終変更番号", value: ClipboardStatusFormatter.changeCountText(diagnosticsState.diagnostics.lastObservedChangeCount))
+            DiagnosticRow(label: DiagnosticsPanelStrings.databasePathLabel, value: ClipboardStatusFormatter.databasePathText(diagnosticsState.diagnostics.databasePath))
+            DiagnosticRow(label: DiagnosticsPanelStrings.databaseStatusLabel, value: ClipboardStatusFormatter.databaseText(diagnosticsState.diagnostics.databaseStatus))
+            DiagnosticRow(label: DiagnosticsPanelStrings.keychainStatusLabel, value: ClipboardStatusFormatter.keyText(diagnosticsState.diagnostics.keyState))
+            DiagnosticRow(label: DiagnosticsPanelStrings.monitorStatusLabel, value: ClipboardStatusFormatter.monitorText(diagnosticsState.diagnostics.monitorState))
+            DiagnosticRow(label: DiagnosticsPanelStrings.lastChangeCountLabel, value: ClipboardStatusFormatter.changeCountText(diagnosticsState.diagnostics.lastObservedChangeCount))
             DiagnosticRow(
-                label: "最終処理時刻",
+                label: DiagnosticsPanelStrings.lastProcessedAtLabel,
                 value: ClipboardStatusFormatter.diagnosticsProcessedAtText(diagnosticsState.diagnostics.lastProcessedChangeAt)
             )
-            DiagnosticRow(label: "保存結果", value: ClipboardStatusFormatter.operationText(diagnosticsState.diagnostics.lastSaveStatus))
-            DiagnosticRow(label: "保存エラー詳細", value: diagnosticsState.diagnostics.lastSaveError ?? "なし")
-            DiagnosticRow(label: "復号できない履歴", value: "\(diagnosticsState.diagnostics.fetchFailureCount) 件")
-            DiagnosticRow(label: "最新セキュリティエラー", value: diagnosticsState.diagnostics.securityErrorDescription ?? "なし")
-            DiagnosticRow(label: "復旧用バックアップ", value: diagnosticsState.diagnostics.lastRecoveryBackupPath ?? "未作成")
+            DiagnosticRow(label: DiagnosticsPanelStrings.saveResultLabel, value: ClipboardStatusFormatter.operationText(diagnosticsState.diagnostics.lastSaveStatus))
+            DiagnosticRow(label: DiagnosticsPanelStrings.saveErrorDetailLabel, value: diagnosticsState.diagnostics.lastSaveError ?? DiagnosticsPanelStrings.noneValue)
+            DiagnosticRow(label: DiagnosticsPanelStrings.fetchFailureCountLabel, value: DiagnosticsPanelStrings.fetchFailureCount(diagnosticsState.diagnostics.fetchFailureCount))
+            DiagnosticRow(label: DiagnosticsPanelStrings.latestSecurityErrorLabel, value: diagnosticsState.diagnostics.securityErrorDescription ?? DiagnosticsPanelStrings.noneValue)
+            DiagnosticRow(label: DiagnosticsPanelStrings.recoveryBackupLabel, value: diagnosticsState.diagnostics.lastRecoveryBackupPath ?? DiagnosticsPanelStrings.notCreatedValue)
 
             if diagnosticsState.diagnostics.keyState == .missing || diagnosticsState.diagnostics.fetchFailureCount > 0 {
                 HStack(spacing: 12) {
-                    Button("バックアップして初期化") {
+                    Button(DiagnosticsPanelStrings.backupAndResetButton) {
                         Task { await manager.recoverFromMissingKey() }
                     }
                     .buttonStyle(.borderedProminent)
 
-                    Text("既存 DB をバックアップし、新しい暗号鍵で履歴 DB を初期化します。")
+                    Text(DiagnosticsPanelStrings.backupAndResetDescription)
                         .font(.caption2)
                         .foregroundColor(ForkclipTheme.ink(0.8))
                 }

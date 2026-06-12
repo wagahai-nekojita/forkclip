@@ -1,0 +1,193 @@
+{
+  "sourceLanguage" : "ja",
+  "strings" : {
+    "diagnostics.panel.backupAndReset.button" : {
+      "comment" : "Button title for backing up the current database and resetting encrypted history when diagnostics report a recoverable key problem.",
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "バックアップして初期化"
+          }
+        }
+      }
+    },
+    "diagnostics.panel.backupAndReset.description" : {
+      "comment" : "Description shown next to the diagnostics recovery button.",
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "既存 DB をバックアップし、新しい暗号鍵で履歴 DB を初期化します。"
+          }
+        }
+      }
+    },
+    "diagnostics.panel.databasePath.label" : {
+      "comment" : "Diagnostics row label for the database path.",
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "データベースパス"
+          }
+        }
+      }
+    },
+    "diagnostics.panel.databaseStatus.label" : {
+      "comment" : "Diagnostics row label for the database availability status.",
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "データベース状態"
+          }
+        }
+      }
+    },
+    "diagnostics.panel.fetchFailureCount.format" : {
+      "comment" : "Diagnostics row value format for the number of history entries that cannot be decrypted.",
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%d 件"
+          }
+        }
+      }
+    },
+    "diagnostics.panel.fetchFailureCount.label" : {
+      "comment" : "Diagnostics row label for history entries that cannot be decrypted.",
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "復号できない履歴"
+          }
+        }
+      }
+    },
+    "diagnostics.panel.keychainStatus.label" : {
+      "comment" : "Diagnostics row label for the Keychain state.",
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Keychain 状態"
+          }
+        }
+      }
+    },
+    "diagnostics.panel.lastChangeCount.label" : {
+      "comment" : "Diagnostics row label for the last observed pasteboard change count.",
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最終変更番号"
+          }
+        }
+      }
+    },
+    "diagnostics.panel.lastProcessedAt.label" : {
+      "comment" : "Diagnostics row label for the last processed pasteboard change time.",
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最終処理時刻"
+          }
+        }
+      }
+    },
+    "diagnostics.panel.latestSecurityError.label" : {
+      "comment" : "Diagnostics row label for the latest security error.",
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最新セキュリティエラー"
+          }
+        }
+      }
+    },
+    "diagnostics.panel.monitorStatus.label" : {
+      "comment" : "Diagnostics row label for the clipboard monitor status.",
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "監視状態"
+          }
+        }
+      }
+    },
+    "diagnostics.panel.none.value" : {
+      "comment" : "Diagnostics fallback value when no error detail is available.",
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "なし"
+          }
+        }
+      }
+    },
+    "diagnostics.panel.notCreated.value" : {
+      "comment" : "Diagnostics fallback value when no recovery backup has been created.",
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未作成"
+          }
+        }
+      }
+    },
+    "diagnostics.panel.recoveryBackup.label" : {
+      "comment" : "Diagnostics row label for the latest recovery backup path.",
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "復旧用バックアップ"
+          }
+        }
+      }
+    },
+    "diagnostics.panel.saveErrorDetail.label" : {
+      "comment" : "Diagnostics row label for the latest save error detail.",
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保存エラー詳細"
+          }
+        }
+      }
+    },
+    "diagnostics.panel.saveResult.label" : {
+      "comment" : "Diagnostics row label for the latest save operation result.",
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保存結果"
+          }
+        }
+      }
+    },
+    "diagnostics.panel.title" : {
+      "comment" : "Title for the diagnostics panel in the quick panel.",
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "診断パネル"
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.0"
+}

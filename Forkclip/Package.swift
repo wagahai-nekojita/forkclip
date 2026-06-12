@@ -5,6 +5,7 @@ import PackageDescription
 
 let package = Package(
     name: "Forkclip",
+    defaultLocalization: "ja",
     platforms: [
         .macOS(.v12)
     ],
@@ -16,6 +17,9 @@ let package = Package(
             name: "Forkclip",
             dependencies: [
                 .product(name: "SQLite", package: "SQLite.swift")
+            ],
+            resources: [
+                .process("Resources")
             ]
         ),
         .testTarget(
