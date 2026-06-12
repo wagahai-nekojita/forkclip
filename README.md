@@ -145,6 +145,7 @@ This repository is for source review and portfolio evaluation.
 - No GitHub Release artifacts are provided.
 - The app is not currently signed or notarized for public distribution.
 - GitHub Actions validates source build/test behavior only; it does not prove app bundle refresh, clipboard-writing smoke tests, native UI smoke, signing, notarization, packaging, or install verification.
+- Public app distribution remains blocked on the hardening work listed in [ADR 0010](docs/adr/0010-public-app-distribution-hardening-blockers.md).
 
 ## License
 

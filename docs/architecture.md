@@ -88,5 +88,6 @@ Release signing and Hardened Runtime checks exist as explicit scripts, but missi
 - [ADR 0007: Encryption Key Rotation Workflow](adr/0007-encryption-key-rotation-workflow.md)
 - [ADR 0008: Sandbox Storage Migration Plan](adr/0008-sandbox-storage-migration-plan.md)
 - [ADR 0009: Keychain Migration Plan](adr/0009-keychain-migration-plan.md)
+- [ADR 0010: Public App Distribution Hardening Blockers](adr/0010-public-app-distribution-hardening-blockers.md)
 
 Start with the [ADR index](adr/README.md) for implementation status and recommended reading order.
