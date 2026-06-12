@@ -262,6 +262,21 @@ final class SecurityManagerTests: XCTestCase {
         XCTAssertNil(unrelatedManager.decrypt(ciphertext))
     }
 
+    func testDuplicateContentDigestUsesInjectedKeyMaterial() throws {
+        let storage = SecurityManager.InMemoryKeyStorage()
+        let firstManager = SecurityManager(keyStorage: storage)
+        XCTAssertTrue(firstManager.ensureEncryptionKeyExists())
+        let digest = try XCTUnwrap(firstManager.duplicateContentDigest(for: "repeat value"))
+
+        let reopenedManager = SecurityManager(keyStorage: storage)
+        XCTAssertEqual(reopenedManager.duplicateContentDigest(for: "repeat value"), digest)
+
+        let unrelatedManager = SecurityManager(keyStorage: SecurityManager.InMemoryKeyStorage())
+        XCTAssertTrue(unrelatedManager.ensureEncryptionKeyExists())
+        XCTAssertNotEqual(unrelatedManager.duplicateContentDigest(for: "repeat value"), digest)
+        XCTAssertFalse(digest.contains("repeat value"))
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
@@ -413,6 +428,22 @@ struct SecurityManagerTests {
 
         let unrelatedManager = SecurityManager(keyStorage: SecurityManager.InMemoryKeyStorage())
         #expect(unrelatedManager.decrypt(ciphertext) == nil)
+    }
+
+    @Test
+    func duplicateContentDigestUsesInjectedKeyMaterial() throws {
+        let storage = SecurityManager.InMemoryKeyStorage()
+        let firstManager = SecurityManager(keyStorage: storage)
+        #expect(firstManager.ensureEncryptionKeyExists())
+        let digest = try #require(firstManager.duplicateContentDigest(for: "repeat value"))
+
+        let reopenedManager = SecurityManager(keyStorage: storage)
+        #expect(reopenedManager.duplicateContentDigest(for: "repeat value") == digest)
+
+        let unrelatedManager = SecurityManager(keyStorage: SecurityManager.InMemoryKeyStorage())
+        #expect(unrelatedManager.ensureEncryptionKeyExists())
+        #expect(unrelatedManager.duplicateContentDigest(for: "repeat value") != digest)
+        #expect(digest.contains("repeat value") == false)
     }
 }
 #endif

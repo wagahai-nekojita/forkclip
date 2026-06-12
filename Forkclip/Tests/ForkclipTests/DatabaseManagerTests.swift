@@ -39,6 +39,7 @@ final class DatabaseManagerTests: XCTestCase {
         let displayTitle = Expression<String?>("display_title")
         let contentType = Expression<String>("content_type")
         let primaryContentType = Expression<String>("primary_content_type")
+        let duplicateDigest = Expression<String?>("duplicate_digest")
         let usageCount = Expression<Int>("usage_count")
         let lastUsedAt = Expression<Date?>("last_used_at")
         let captureCount = Expression<Int>("capture_count")
@@ -53,6 +54,9 @@ final class DatabaseManagerTests: XCTestCase {
         let itemRow = try XCTUnwrap(db.pluck(items))
 
         XCTAssertEqual(itemRow[primaryContentType], ClipboardContentType.plainText.rawValue)
+        let storedDuplicateDigest = try XCTUnwrap(itemRow[duplicateDigest])
+        XCTAssertEqual(storedDuplicateDigest, security.duplicateContentDigest(for: "hello payload"))
+        XCTAssertFalse(storedDuplicateDigest.contains("hello payload"))
         XCTAssertEqual(itemRow[usageCount], 0)
         XCTAssertNil(itemRow[lastUsedAt])
         XCTAssertEqual(itemRow[captureCount], 1)
@@ -158,6 +162,122 @@ final class DatabaseManagerTests: XCTestCase {
 
         XCTAssertEqual(try userVersion(in: db), SchemaMigrator.currentSchemaVersion)
         try assertQueryPathIndexes(in: db)
+    }
+
+    func testVersionElevenDatabaseBackfillsDuplicateDigests() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let databaseURL = tempDirectory.appendingPathComponent("forkclip-test.sqlite")
+        let db = try Connection(databaseURL.path)
+        try createSchemaVersionElevenTables(in: db)
+        let items = Table("clipboard_items")
+        let id = Expression<UUID>("id")
+        let content = Expression<String>("content")
+        let timestamp = Expression<Date>("timestamp")
+        let bundleID = Expression<String?>("bundle_id")
+        let isSecret = Expression<Bool>("is_secret")
+        let isFavorite = Expression<Bool>("is_favorite")
+        let usageCount = Expression<Int>("usage_count")
+        let lastUsedAt = Expression<Date?>("last_used_at")
+        let captureCount = Expression<Int>("capture_count")
+        let lastCapturedAt = Expression<Date?>("last_captured_at")
+        let primaryContentType = Expression<String>("primary_content_type")
+        let migratedFromLegacy = Expression<Bool>("migrated_from_legacy")
+        let duplicateDigest = Expression<String?>("duplicate_digest")
+        let itemID = UUID()
+        let legacyContent = "legacy duplicate"
+        let encrypted = try XCTUnwrap(security.encrypt(legacyContent, context: .itemContent(itemID: itemID)))
+
+        try db.run(items.insert(
+            id <- itemID,
+            content <- encrypted,
+            timestamp <- Date(timeIntervalSince1970: 1),
+            bundleID <- Optional("com.example.source"),
+            isSecret <- false,
+            isFavorite <- false,
+            usageCount <- 0,
+            lastUsedAt <- nil,
+            captureCount <- 1,
+            lastCapturedAt <- Optional(Date(timeIntervalSince1970: 1)),
+            primaryContentType <- ClipboardContentType.plainText.rawValue,
+            migratedFromLegacy <- false
+        ))
+        try db.run("PRAGMA user_version = 11")
+
+        let manager = makeDatabaseManager(
+            databaseURL: databaseURL,
+            retentionPolicy: ClipboardRetentionPolicy(fetchLimit: 10, maxStoredItems: nil, maxAgeDays: nil)
+        )
+        _ = await manager.diagnosticsSnapshot()
+
+        XCTAssertEqual(try userVersion(in: db), SchemaMigrator.currentSchemaVersion)
+        let duplicateDigestColumnCount = try integerScalar(
+            "SELECT COUNT(*) FROM pragma_table_info('clipboard_items') WHERE name = 'duplicate_digest'",
+            in: db
+        )
+        XCTAssertEqual(duplicateDigestColumnCount, 1)
+        let migratedRow = try XCTUnwrap(db.pluck(items.filter(id == itemID)))
+        let storedDuplicateDigest = try XCTUnwrap(migratedRow[duplicateDigest])
+        XCTAssertEqual(storedDuplicateDigest, security.duplicateContentDigest(for: legacyContent))
+        XCTAssertFalse(storedDuplicateDigest.contains(legacyContent))
+        try assertQueryPathIndexes(in: db)
+    }
+
+    func testUnreadableDuplicateDigestBackfillDoesNotAdvanceUserVersion() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let databaseURL = tempDirectory.appendingPathComponent("forkclip-test.sqlite")
+        let db = try Connection(databaseURL.path)
+        try createSchemaVersionElevenTables(in: db)
+        let items = Table("clipboard_items")
+        let id = Expression<UUID>("id")
+        let content = Expression<String>("content")
+        let timestamp = Expression<Date>("timestamp")
+        let bundleID = Expression<String?>("bundle_id")
+        let isSecret = Expression<Bool>("is_secret")
+        let isFavorite = Expression<Bool>("is_favorite")
+        let usageCount = Expression<Int>("usage_count")
+        let lastUsedAt = Expression<Date?>("last_used_at")
+        let captureCount = Expression<Int>("capture_count")
+        let lastCapturedAt = Expression<Date?>("last_captured_at")
+        let primaryContentType = Expression<String>("primary_content_type")
+        let migratedFromLegacy = Expression<Bool>("migrated_from_legacy")
+
+        try db.run(items.insert(
+            id <- UUID(),
+            content <- "not encrypted content",
+            timestamp <- Date(),
+            bundleID <- Optional("com.example.source"),
+            isSecret <- false,
+            isFavorite <- false,
+            usageCount <- 0,
+            lastUsedAt <- nil,
+            captureCount <- 1,
+            lastCapturedAt <- Optional(Date()),
+            primaryContentType <- ClipboardContentType.plainText.rawValue,
+            migratedFromLegacy <- false
+        ))
+        try db.run("PRAGMA user_version = 11")
+
+        let manager = makeDatabaseManager(
+            databaseURL: databaseURL,
+            retentionPolicy: ClipboardRetentionPolicy(fetchLimit: 10, maxStoredItems: nil, maxAgeDays: nil)
+        )
+        _ = await manager.diagnosticsSnapshot()
+
+        let databaseStatus = await manager.databaseStatus
+        XCTAssertEqual(databaseStatus, .failed)
+        XCTAssertEqual(try userVersion(in: db), 11)
+        let duplicateDigestColumnCount = try integerScalar(
+            "SELECT COUNT(*) FROM pragma_table_info('clipboard_items') WHERE name = 'duplicate_digest'",
+            in: db
+        )
+        XCTAssertEqual(duplicateDigestColumnCount, 0)
+        await assertDatabaseUnavailableAfterSetupFailure(manager)
     }
 
     func testDatabaseConnectionAppliesWALAndBusyTimeoutPragmas() async throws {
@@ -654,6 +774,88 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(reloadedItems.first?.captureCount, 2)
         XCTAssertEqual(try XCTUnwrap(reloadedItems.first?.lastCapturedAt).timeIntervalSince1970, duplicateDate.timeIntervalSince1970, accuracy: 0.001)
         XCTAssertEqual(reloadedItems.first?.usageCount, 0)
+    }
+
+    func testDuplicateLookupUsesDigestWithoutDecryptingNonMatchingCandidates() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let databaseURL = tempDirectory.appendingPathComponent("forkclip-test.sqlite")
+        let countingSecurity = CountingClipboardCryptography()
+        let manager = makeDatabaseManager(
+            databaseURL: databaseURL,
+            retentionPolicy: ClipboardRetentionPolicy(fetchLimit: 10, maxStoredItems: nil, maxAgeDays: nil),
+            security: countingSecurity
+        )
+        let now = Date()
+        let original = ClipboardItem(
+            id: UUID(),
+            content: "repeat me",
+            timestamp: now.addingTimeInterval(-20),
+            bundleID: "com.example.source"
+        )
+        let newerNonMatch = ClipboardItem(
+            id: UUID(),
+            content: "newer once",
+            timestamp: now.addingTimeInterval(-10),
+            bundleID: "com.example.source"
+        )
+
+        try await manager.saveItem(original, originBundleID: original.bundleID, secret: false, migrated: false)
+        try await manager.saveItem(newerNonMatch, originBundleID: newerNonMatch.bundleID, secret: false, migrated: false)
+        countingSecurity.resetCounters()
+
+        let recordedDuplicate = await manager.recordDuplicateCapture(
+            content: "repeat me",
+            primaryContentType: .plainText,
+            bundleID: "com.example.source",
+            at: now
+        )
+
+        let updated = try XCTUnwrap(recordedDuplicate)
+        XCTAssertEqual(updated.id, original.id)
+        XCTAssertEqual(countingSecurity.decryptCallCount, 1)
+    }
+
+    func testDuplicateLookupDoesNotMatchDifferentSourceOrPrimaryType() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let databaseURL = tempDirectory.appendingPathComponent("forkclip-test.sqlite")
+        let manager = makeDatabaseManager(
+            databaseURL: databaseURL,
+            retentionPolicy: ClipboardRetentionPolicy(fetchLimit: 10, maxStoredItems: nil, maxAgeDays: nil)
+        )
+        let item = ClipboardItem(
+            id: UUID(),
+            content: "shared value",
+            timestamp: Date(timeIntervalSince1970: 1),
+            bundleID: "com.example.source",
+            primaryContentType: .plainText
+        )
+
+        try await manager.saveItem(item, originBundleID: item.bundleID, secret: false, migrated: false)
+
+        let differentSource = await manager.recordDuplicateCapture(
+            content: "shared value",
+            primaryContentType: .plainText,
+            bundleID: "com.example.other",
+            at: Date(timeIntervalSince1970: 2)
+        )
+        let differentPrimaryType = await manager.recordDuplicateCapture(
+            content: "shared value",
+            primaryContentType: .html,
+            bundleID: "com.example.source",
+            at: Date(timeIntervalSince1970: 3)
+        )
+        let fetched = await manager.fetchAll()
+
+        XCTAssertNil(differentSource)
+        XCTAssertNil(differentPrimaryType)
+        XCTAssertEqual(fetched.first?.captureCount, 1)
+        XCTAssertEqual(try XCTUnwrap(fetched.first?.lastCapturedAt).timeIntervalSince1970, item.timestamp.timeIntervalSince1970, accuracy: 0.001)
     }
 
     func testUpdateFavoriteStateReturnsFalseForMissingItem() async throws {
@@ -1407,6 +1609,17 @@ final class DatabaseManagerTests: XCTestCase {
                     ExpectedSchemaIndexTerm(column: "last_captured_at", descending: true),
                     ExpectedSchemaIndexTerm(column: "timestamp", descending: true)
                 ]
+            ),
+            ExpectedSchemaIndex(
+                name: "idx_clipboard_items_duplicate_lookup",
+                table: "clipboard_items",
+                terms: [
+                    ExpectedSchemaIndexTerm(column: "primary_content_type", descending: false),
+                    ExpectedSchemaIndexTerm(column: "bundle_id", descending: false),
+                    ExpectedSchemaIndexTerm(column: "duplicate_digest", descending: false),
+                    ExpectedSchemaIndexTerm(column: "last_captured_at", descending: true),
+                    ExpectedSchemaIndexTerm(column: "timestamp", descending: true)
+                ]
             )
         ]
     }
@@ -1501,6 +1714,30 @@ final class DatabaseManagerTests: XCTestCase {
             """)
     }
 
+    private func createSchemaVersionElevenTables(in db: Connection) throws {
+        try createSchemaVersionTenTables(in: db)
+        try db.run("""
+            CREATE INDEX IF NOT EXISTS idx_clipboard_payloads_item_id_rank
+            ON clipboard_payloads(item_id, rank)
+            """)
+        try db.run("""
+            CREATE INDEX IF NOT EXISTS idx_clipboard_item_folders_item_id_folder_id
+            ON clipboard_item_folders(item_id, folder_id)
+            """)
+        try db.run("""
+            CREATE INDEX IF NOT EXISTS idx_clipboard_item_folders_folder_id
+            ON clipboard_item_folders(folder_id)
+            """)
+        try db.run("""
+            CREATE INDEX IF NOT EXISTS idx_clipboard_items_favorite_capture_order
+            ON clipboard_items(is_favorite, last_captured_at DESC, timestamp DESC)
+            """)
+        try db.run("""
+            CREATE INDEX IF NOT EXISTS idx_clipboard_items_usage_order
+            ON clipboard_items(usage_count DESC, last_used_at DESC, last_captured_at DESC, timestamp DESC)
+            """)
+    }
+
     private func integerScalar(_ sql: String, in db: Connection) throws -> Int {
         let value = try db.scalar(sql)
         if let intValue = value as? Int64 {
@@ -1539,15 +1776,50 @@ final class DatabaseManagerTests: XCTestCase {
 
     private func makeDatabaseManager(
         databaseURL: URL,
-        retentionPolicy: ClipboardRetentionPolicy = .load()
+        retentionPolicy: ClipboardRetentionPolicy = .load(),
+        security: ClipboardCryptographyProviding? = nil
     ) -> DatabaseManager {
-        DatabaseManager(databaseURL: databaseURL, retentionPolicy: retentionPolicy, security: security)
+        DatabaseManager(databaseURL: databaseURL, retentionPolicy: retentionPolicy, security: security ?? self.security)
     }
 
     private func posixPermissions(at url: URL) throws -> Int {
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         let permissions = try XCTUnwrap(attributes[.posixPermissions] as? NSNumber)
         return permissions.intValue & 0o777
+    }
+}
+
+private final class CountingClipboardCryptography: ClipboardCryptographyProviding, @unchecked Sendable {
+    private let wrapped = SecurityManager(keyStorage: SecurityManager.InMemoryKeyStorage())
+    private(set) var decryptCallCount = 0
+
+    var lastError: SecurityManager.SecurityError? {
+        wrapped.lastError
+    }
+
+    func encrypt(_ text: String, context: EncryptionContext?) -> String? {
+        wrapped.encrypt(text, context: context)
+    }
+
+    func decrypt(_ base64Encoded: String, context: EncryptionContext?) -> String? {
+        decryptCallCount += 1
+        return wrapped.decrypt(base64Encoded, context: context)
+    }
+
+    func duplicateContentDigest(for text: String) -> String? {
+        wrapped.duplicateContentDigest(for: text)
+    }
+
+    func currentKeyState() -> SecurityKeyState {
+        wrapped.currentKeyState()
+    }
+
+    func replaceMissingKey() -> Bool {
+        wrapped.replaceMissingKey()
+    }
+
+    func resetCounters() {
+        decryptCallCount = 0
     }
 }
 #elseif canImport(Testing)

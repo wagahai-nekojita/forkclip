@@ -8,7 +8,7 @@ Accepted
 
 Forkclip stores clipboard history in a local SQLite database under the user's Application Support directory. Clipboard item preview content and payload bytes are encrypted before persistence with AES-GCM. New encrypted rows bind ciphertext to row identity with authenticated data: item content is tied to its item ID, and payload bytes are tied to the item ID and payload ID.
 
-The database still contains queryable metadata in plaintext. Current plaintext metadata includes row IDs, timestamps, source bundle IDs, favorite and secret flags, usage counts, content type, pasteboard type, byte size, rank, folder names, folder assignments, and schema version. Payload-row preview metadata is not persisted in v1 and existing preview values are cleared by migration.
+The database still contains queryable metadata in plaintext or keyed equality-token form. Current metadata includes row IDs, timestamps, source bundle IDs, favorite and secret flags, usage counts, content type, keyed duplicate-content digests, pasteboard type, byte size, rank, folder names, folder assignments, and schema version. Payload-row preview metadata is not persisted in v1 and existing preview values are cleared by migration.
 
 This boundary keeps filtering, retention, folders, diagnostics, and migration checks simple, but it means a local process or backup with database access can still infer clipboard behavior from metadata even when payload content is encrypted. SQLCipher could encrypt the whole SQLite file, but adopting it changes build, migration, key-management, corruption-recovery, and release-validation surfaces.
 
@@ -19,9 +19,10 @@ Do not adopt SQLCipher in the next implementation increment. Keep the current ap
 Forkclip will minimize plaintext metadata before adding database-file encryption. New metadata columns must be classified before implementation:
 
 - Content data and content-derived previews are encrypted or omitted.
+- Content-derived query tokens are limited to `duplicate_digest`, a keyed HMAC-SHA256 equality token derived from local key material for duplicate detection.
 - Query metadata may remain plaintext only when needed for local product behavior.
 - Sensitive metadata should be avoided by default, especially user-entered preview text, raw pasteboard payload summaries, unbounded source labels, and secret-derived search material.
-- Any future searchable index must have a separate design decision before persistence.
+- Any future searchable index must have a separate design decision before persistence; `duplicate_digest` is limited to exact duplicate equality lookup and must not support plaintext search.
 
 SQLCipher adoption is deferred until Forkclip has explicit answers for database migration rollback, key rotation, Keychain migration, sandbox storage migration, release signing, and local validation. If SQLCipher is later adopted, it must be implemented as an additive migration with backup or rollback behavior, old-database readability checks, and clear diagnostics for key or open failures.
 
@@ -54,11 +55,13 @@ Benefits:
 - Avoids dependency, build, and database-open churn before migration policy exists.
 - Keeps current encrypted payload and authenticated-data tests meaningful.
 - Makes metadata minimization the default review standard for future schema work.
+- Allows duplicate detection to use an indexed keyed equality check without storing raw content hashes.
 - Leaves SQLCipher available as a focused hardening project instead of a hidden side effect of unrelated persistence work.
 
 Costs:
 
 - The SQLite file still exposes metadata to a process or backup that can read the database file.
+- The SQLite file can reveal keyed duplicate equality groups for retained rows without revealing raw hashes.
 - Future feature work must justify each new plaintext metadata field.
 - Stronger database-at-rest protection remains blocked on migration, key, sandbox, and release-readiness work.
 

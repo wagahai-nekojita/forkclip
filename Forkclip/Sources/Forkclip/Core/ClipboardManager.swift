@@ -97,6 +97,7 @@ enum ClipboardPersistenceError: LocalizedError, Equatable, Sendable {
     case databaseUnavailable
     case itemEncryptionFailed(SecurityManager.SecurityError?)
     case displayTitleEncryptionFailed(SecurityManager.SecurityError?)
+    case itemDigestFailed(SecurityManager.SecurityError?)
     case payloadEncryptionFailed(contentType: ClipboardContentType, pasteboardType: String, securityError: SecurityManager.SecurityError?)
     case itemWriteFailed(String)
     case payloadWriteFailed(contentType: ClipboardContentType, pasteboardType: String, underlying: String)
@@ -111,6 +112,8 @@ enum ClipboardPersistenceError: LocalizedError, Equatable, Sendable {
             return securityError?.localizedDescription ?? "履歴本文の暗号化に失敗しました。"
         case .displayTitleEncryptionFailed(let securityError):
             return securityError?.localizedDescription ?? "表示名の暗号化に失敗しました。"
+        case .itemDigestFailed(let securityError):
+            return securityError?.localizedDescription ?? "重複検出用の要約生成に失敗しました。"
         case .payloadEncryptionFailed(let contentType, let pasteboardType, let securityError):
             let baseMessage = securityError?.localizedDescription ?? "ペイロードの暗号化に失敗しました。"
             return "\(baseMessage) (\(contentType.rawValue)/\(pasteboardType))"

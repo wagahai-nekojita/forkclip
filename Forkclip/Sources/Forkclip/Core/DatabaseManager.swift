@@ -116,6 +116,7 @@ actor DatabaseManager {
     private let captureCount = Expression<Int>("capture_count")
     private let lastCapturedAt = Expression<Date?>("last_captured_at")
     private let primaryContentType = Expression<String>("primary_content_type")
+    private let duplicateDigest = Expression<String?>("duplicate_digest")
     private let migratedFromLegacy = Expression<Bool>("migrated_from_legacy")
 
     private let payloads = Table("clipboard_payloads")
@@ -220,6 +221,7 @@ actor DatabaseManager {
         } else {
             encryptedDisplayTitle = nil
         }
+        let contentDuplicateDigest = try duplicateDigestValue(for: item.content)
 
         let payloadsToStore = itemPayloads.isEmpty ? [.plainText(item.content)] : itemPayloads
         var payloadInserts: [PendingPayloadInsert] = []
@@ -240,6 +242,7 @@ actor DatabaseManager {
             captureCount <- item.captureCount,
             lastCapturedAt <- Optional(item.lastCapturedAt),
             primaryContentType <- item.primaryContentType.rawValue,
+            duplicateDigest <- Optional(contentDuplicateDigest),
             migratedFromLegacy <- migrated
         )
         do {
@@ -544,7 +547,13 @@ actor DatabaseManager {
         ensureDatabaseSetup()
         guard let db else { return nil }
         do {
-            var candidateQuery = items.filter(self.primaryContentType == primaryContentType.rawValue)
+            guard let contentDuplicateDigest = security.duplicateContentDigest(for: content) else {
+                AppLogger.database.error("Record duplicate capture skipped because digest generation failed.")
+                return nil
+            }
+            var candidateQuery = items
+                .filter(self.primaryContentType == primaryContentType.rawValue)
+                .filter(self.duplicateDigest == Optional(contentDuplicateDigest))
             if let bundleID {
                 candidateQuery = candidateQuery.filter(self.bundleID == bundleID)
             } else {
@@ -570,6 +579,14 @@ actor DatabaseManager {
             AppLogger.database.error("Record duplicate capture error: \(String(describing: error), privacy: .public)")
         }
         return nil
+    }
+
+    private func duplicateDigestValue(for content: String) throws -> String {
+        guard let contentDuplicateDigest = security.duplicateContentDigest(for: content) else {
+            AppLogger.database.error("Save aborted because duplicate digest generation failed.")
+            throw ClipboardPersistenceError.itemDigestFailed(security.lastError)
+        }
+        return contentDuplicateDigest
     }
 
     @discardableResult

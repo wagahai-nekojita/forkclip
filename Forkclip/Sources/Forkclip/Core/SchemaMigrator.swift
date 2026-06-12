@@ -6,6 +6,7 @@ enum SchemaMigrationError: LocalizedError, Equatable {
     case unsupportedFutureVersion(found: Int, current: Int)
     case legacyItemPayloadMigrationFailed(itemID: UUID)
     case legacyPlainTextPayloadRewriteFailed(payloadID: UUID, itemID: UUID)
+    case duplicateDigestBackfillFailed(itemID: UUID)
 
     var errorDescription: String? {
         switch self {
@@ -15,12 +16,14 @@ enum SchemaMigrationError: LocalizedError, Equatable {
             return "legacy item payload migration failed. (itemID: \(itemID.uuidString))"
         case .legacyPlainTextPayloadRewriteFailed(let payloadID, let itemID):
             return "legacy plain text payload rewrite failed. (payloadID: \(payloadID.uuidString), itemID: \(itemID.uuidString))"
+        case .duplicateDigestBackfillFailed(let itemID):
+            return "duplicate digest backfill failed. (itemID: \(itemID.uuidString))"
         }
     }
 }
 
 struct SchemaMigrator {
-    static let currentSchemaVersion = 11
+    static let currentSchemaVersion = 12
     private let security: ClipboardCryptographyProviding
 
     private let items = Table("clipboard_items")
@@ -36,6 +39,7 @@ struct SchemaMigrator {
     private let captureCount = Expression<Int>("capture_count")
     private let lastCapturedAt = Expression<Date?>("last_captured_at")
     private let primaryContentType = Expression<String>("primary_content_type")
+    private let duplicateDigest = Expression<String?>("duplicate_digest")
     private let migratedFromLegacy = Expression<Bool>("migrated_from_legacy")
 
     private let payloads = Table("clipboard_payloads")
@@ -85,6 +89,7 @@ struct SchemaMigrator {
             if version < 9 { try addCaptureColumnsIfNeeded(in: db) }
             if version < 10 { try addDisplayTitleColumnIfNeeded(in: db) }
             if version < 11 { try addQueryPathIndexesIfNeeded(in: db) }
+            if version < 12 { try addDuplicateDigestColumnAndIndexIfNeeded(in: db) }
 
             try setUserVersion(Self.currentSchemaVersion, in: db)
         }
@@ -119,6 +124,7 @@ struct SchemaMigrator {
             t.column(captureCount, defaultValue: 1)
             t.column(lastCapturedAt)
             t.column(primaryContentType, defaultValue: ClipboardContentType.plainText.rawValue)
+            t.column(duplicateDigest)
             t.column(migratedFromLegacy, defaultValue: false)
         })
 
@@ -170,6 +176,53 @@ struct SchemaMigrator {
             CREATE INDEX IF NOT EXISTS idx_clipboard_items_usage_order
             ON clipboard_items(usage_count DESC, last_used_at DESC, last_captured_at DESC, timestamp DESC)
             """)
+    }
+
+    private func addDuplicateDigestColumnAndIndexIfNeeded(in db: Connection) throws {
+        let duplicateDigestColumnCount = try db.scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('clipboard_items') WHERE name = 'duplicate_digest'"
+        ) as? Int64 ?? 0
+        if duplicateDigestColumnCount == 0 {
+            try db.run(items.addColumn(duplicateDigest))
+        }
+
+        try backfillDuplicateDigests(in: db)
+        try db.run("""
+            CREATE INDEX IF NOT EXISTS idx_clipboard_items_duplicate_lookup
+            ON clipboard_items(primary_content_type, bundle_id, duplicate_digest, last_captured_at DESC, timestamp DESC)
+            """)
+    }
+
+    private func backfillDuplicateDigests(in db: Connection) throws {
+        let rows = try db.prepare(
+            items
+                .select(id, content, duplicateDigest)
+                .filter(duplicateDigest == nil)
+        )
+        var backfills: [(itemID: UUID, digest: String)] = []
+        for row in rows {
+            let itemID = row[id]
+            guard let decryptedContent = security.decrypt(
+                row[content],
+                context: .itemContent(itemID: itemID)
+            ) else {
+                AppLogger.database.error("Duplicate digest backfill failed because item content could not be decrypted.")
+                throw SchemaMigrationError.duplicateDigestBackfillFailed(itemID: itemID)
+            }
+            guard let contentDigest = security.duplicateContentDigest(for: decryptedContent) else {
+                AppLogger.database.error("Duplicate digest backfill failed because digest generation failed.")
+                throw SchemaMigrationError.duplicateDigestBackfillFailed(itemID: itemID)
+            }
+            backfills.append((itemID, contentDigest))
+        }
+
+        for backfill in backfills {
+            try db.run(
+                items
+                    .filter(id == backfill.itemID)
+                    .update(duplicateDigest <- Optional(backfill.digest))
+            )
+        }
     }
 
     private func addFavoriteColumnIfNeeded(in db: Connection) throws {
