@@ -15,11 +15,14 @@ The script builds the Swift package, creates or refreshes `Forkclip.app`, copies
 ## Menu Bar Controls
 
 - Left-click the menu bar icon to open or close the history panel.
+- Press `Control-Option-Command-V` from any app to open or close the history panel.
 - Right-click the menu bar icon to open the context menu.
 - Use `Dashboard を開く` to open the larger Dashboard window for browsing and inspecting history.
 - Use `設定...` to open Settings.
 - Use `Forkclip について` to open version and support information.
 - Use `Forkclip を終了` to quit the app.
+
+If macOS rejects the global hotkey because another app or system feature already owns it, Forkclip keeps running. The status item context menu and Settings show that the shortcut is not registered, and both provide the current shortcut so you can resolve the conflict and retry registration.
 
 ## First Use
 
