@@ -947,6 +947,57 @@ final class ClipboardManagerTests: XCTestCase {
         XCTAssertEqual(scheduler.invalidateCount, 1)
     }
 
+    func testMonitorSchedulerFailureReportsDiagnosticsAndRestarts() async {
+        let pasteboard = FakePasteboard(changeCount: 0, stringValue: nil)
+        let store = FakeClipboardStore()
+        let scheduler = ManualClipboardMonitorScheduler()
+        let manager = await makeManager(pasteboard: pasteboard, store: store, monitorScheduler: scheduler)
+        scheduler.scheduleError = FakeClipboardMonitorError.schedulingFailed
+
+        manager.startMonitoring()
+        await manager.refreshDiagnostics()
+
+        let message = "Unable to schedule clipboard polling: Synthetic scheduling failure."
+        XCTAssertFalse(scheduler.isScheduled)
+        XCTAssertEqual(manager.diagnostics.monitorState, .failed(message))
+        XCTAssertEqual(ClipboardStatusFormatter.monitorText(manager.diagnostics.monitorState), "失敗: \(message)")
+
+        scheduler.scheduleError = nil
+        manager.startMonitoring()
+        await manager.refreshDiagnostics()
+
+        XCTAssertTrue(scheduler.isScheduled)
+        XCTAssertEqual(manager.diagnostics.monitorState, .monitoring)
+    }
+
+    func testMonitorPollingFailureReportsDiagnosticsAndRestarts() async {
+        let pasteboard = FakePasteboard(changeCount: 0, stringValue: nil)
+        let store = FakeClipboardStore()
+        let scheduler = ManualClipboardMonitorScheduler()
+        let manager = await makeManager(pasteboard: pasteboard, store: store, monitorScheduler: scheduler)
+        manager.startMonitoring()
+        pasteboard.monitoredChangeCountError = FakeClipboardMonitorError.pasteboardReadFailed
+
+        scheduler.tick()
+        await manager.refreshDiagnostics()
+
+        let message = "Unable to read pasteboard change count: Synthetic pasteboard read failure."
+        XCTAssertFalse(scheduler.isScheduled)
+        XCTAssertEqual(scheduler.invalidateCount, 1)
+        XCTAssertEqual(manager.diagnostics.monitorState, .failed(message))
+        XCTAssertEqual(ClipboardStatusFormatter.monitorText(manager.diagnostics.monitorState), "失敗: \(message)")
+
+        pasteboard.monitoredChangeCountError = nil
+        manager.startMonitoring()
+        pasteboard.write("recovered")
+        scheduler.tick()
+        await manager.waitForClipboardProcessingForTests()
+
+        XCTAssertTrue(scheduler.isScheduled)
+        XCTAssertEqual(manager.diagnostics.monitorState, .monitoring)
+        XCTAssertEqual(store.savedItems.map(\.content), ["recovered"])
+    }
+
     func testMonitorRepeatedTickWithoutChangeDoesNotSave() async {
         let pasteboard = FakePasteboard(changeCount: 7, stringValue: "initial")
         let store = FakeClipboardStore()
@@ -1661,6 +1712,7 @@ private final class FakePasteboard: PasteboardProviding {
     var setStringResult = true
     var setDataResult = true
     var fallbackImageDataValue: Data?
+    var monitoredChangeCountError: Error?
     private(set) var stringReadCount = 0
     private(set) var dataReadCount = 0
     private(set) var fallbackImageReadCount = 0
@@ -1681,6 +1733,13 @@ private final class FakePasteboard: PasteboardProviding {
         self.stringValues = stringValue.map { [.string: $0] } ?? [:]
         self.dataValues = [:]
         self.availableTypes = stringValue == nil ? [] : [.string]
+    }
+
+    func monitoredChangeCount() throws -> Int {
+        if let monitoredChangeCountError {
+            throw monitoredChangeCountError
+        }
+        return changeCount
     }
 
     func string(forType type: NSPasteboard.PasteboardType) -> String? {
@@ -1789,12 +1848,16 @@ private final class ManualClipboardMonitorScheduler: ClipboardMonitorScheduling 
     private var onTick: (@MainActor () -> Void)?
     private(set) var scheduledInterval: TimeInterval?
     private(set) var invalidateCount = 0
+    var scheduleError: Error?
 
     var isScheduled: Bool {
         onTick != nil
     }
 
-    func scheduleRepeating(every interval: TimeInterval, onTick: @escaping @MainActor () -> Void) -> ClipboardMonitorSchedule {
+    func scheduleRepeating(every interval: TimeInterval, onTick: @escaping @MainActor () -> Void) throws -> ClipboardMonitorSchedule {
+        if let scheduleError {
+            throw scheduleError
+        }
         self.scheduledInterval = interval
         self.onTick = onTick
         return ManualClipboardMonitorSchedule { [weak self] in
@@ -1805,6 +1868,20 @@ private final class ManualClipboardMonitorScheduler: ClipboardMonitorScheduling 
 
     func tick() {
         onTick?()
+    }
+}
+
+private enum FakeClipboardMonitorError: LocalizedError {
+    case schedulingFailed
+    case pasteboardReadFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .schedulingFailed:
+            return "Synthetic scheduling failure."
+        case .pasteboardReadFailed:
+            return "Synthetic pasteboard read failure."
+        }
     }
 }
 
