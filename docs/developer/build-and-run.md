@@ -80,6 +80,8 @@ This copies the local app bundle to `/Applications/Forkclip.app`, touches the bu
 
 Local development refreshes stay ad hoc signed by default. Release signing uses the explicit entitlements file at `Forkclip/Release.entitlements` and Hardened Runtime signing through `Forkclip/scripts/check-release-signing.sh`. The current entitlements file is intentionally empty until sandbox or Keychain access-group migrations are implemented; Hardened Runtime is enabled by the signing option.
 
+This check is not a public distribution release pipeline. App Sandbox, a stable release signing identity, notarization, Keychain access-group migration, sandbox storage migration, packaging, and install verification remain blockers before Forkclip can be presented as a public app download. See [ADR 0010](../adr/0010-public-app-distribution-hardening-blockers.md).
+
 Build the local bundle without launching or running clipboard smoke checks:
 
 ```sh

@@ -15,6 +15,7 @@ Implementation status below is portfolio-facing status for the current repositor
 | [0007](0007-encryption-key-rotation-workflow.md) | Encryption Key Rotation Workflow | Accepted | Deferred. Planned key rotation is documented but not implemented. |
 | [0008](0008-sandbox-storage-migration-plan.md) | Sandbox Storage Migration Plan | Accepted | Deferred. Sandbox storage migration is documented but not implemented, and App Sandbox is not enabled by default. |
 | [0009](0009-keychain-migration-plan.md) | Keychain Migration Plan | Accepted | Deferred. Keychain descriptor migration is documented but not implemented; the current app still uses the existing service/account descriptor. |
+| [0010](0010-public-app-distribution-hardening-blockers.md) | Public App Distribution Hardening Blockers | Accepted | Deferred. Public app downloads remain blocked on sandboxing, release signing, notarization, Keychain migration, storage migration, install verification, and distribution validation evidence. |
 
 ## Reading Order
 
@@ -24,4 +25,4 @@ For a quick technical review, start with:
 2. [0004: SQLCipher and Metadata Encryption Strategy](0004-sqlcipher-and-metadata-encryption-strategy.md)
 3. [0005: Migration Rollback Policy](0005-migration-rollback-policy.md)
 
-For release-hardening boundaries, read ADRs 0003, 0007, 0008, and 0009 together. Those decisions explain why this repository is a portfolio source repository and not a public app distribution channel.
+For release-hardening boundaries, read ADRs 0003, 0007, 0008, 0009, and 0010 together. Those decisions explain why this repository is a portfolio source repository and not a public app distribution channel.

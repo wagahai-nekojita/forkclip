@@ -22,6 +22,8 @@ Pull requests and pushes to `main` run the basic CI workflow in `.github/workflo
 
 CI covers `git diff --check`, runtime script syntax, SwiftPM build, and SwiftPM tests on `macos-26` where the hosted runner toolchain supports the package Swift tools version. It does not claim coverage for clipboard-writing smoke checks, app bundle refresh, native UI smoke, signing, notarization, release artifacts, or GitHub Release publishing.
 
+Public app distribution validation is a separate release-hardening track. The blockers and follow-up candidates for sandboxing, signing identity, notarization, Keychain behavior, storage migration, install verification, and distribution validation are documented in [ADR 0010](../adr/0010-public-app-distribution-hardening-blockers.md).
+
 ## Release Signing Check
 
 ```sh
