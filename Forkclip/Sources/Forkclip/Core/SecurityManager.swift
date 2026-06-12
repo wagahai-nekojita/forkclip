@@ -51,6 +51,7 @@ protocol ClipboardCryptographyProviding: AnyObject, Sendable {
     var lastError: SecurityManager.SecurityError? { get }
     func encrypt(_ text: String, context: EncryptionContext?) -> String?
     func decrypt(_ base64Encoded: String, context: EncryptionContext?) -> String?
+    func duplicateContentDigest(for text: String) -> String?
     func currentKeyState() -> SecurityKeyState
     func replaceMissingKey() -> Bool
 }
@@ -149,6 +150,8 @@ final class SecurityManager: @unchecked Sendable {
 
     static let shared = SecurityManager()
     private static let authenticatedCiphertextPrefix = "forkclip-aad-v1:"
+    private static let duplicateDigestKeyInfo = Data("forkclip.v1.duplicate-content-digest.key".utf8)
+    private static let duplicateDigestMessagePrefix = Data("forkclip.v1.clipboard_items.duplicate_digest\u{1f}".utf8)
     private static let defaultBlacklistBundleIDs = [
         "com.1password.1password",
         "com.1password.1password.helper",
@@ -311,6 +314,31 @@ final class SecurityManager: @unchecked Sendable {
         }
     }
 
+    func duplicateContentDigest(for text: String) -> String? {
+        do {
+            let encryptionKey = try getExistingEncryptionKey()
+            let digestKey = Self.duplicateDigestKey(from: encryptionKey)
+            var message = Self.duplicateDigestMessagePrefix
+            guard let textData = text.data(using: .utf8) else { return nil }
+            message.append(textData)
+
+            let digest = HMAC<SHA256>.authenticationCode(for: message, using: digestKey)
+            lastError = nil
+            keyState = .available
+            return Data(digest).base64EncodedString()
+        } catch let error as SecurityError {
+            lastError = error
+            keyState = error == .keyMissing ? .missing : .failed
+            AppLogger.security.error("Duplicate digest generation failed: \(error.localizedDescription, privacy: .public)")
+            return nil
+        } catch {
+            lastError = .keyGenerationFailed
+            keyState = .failed
+            AppLogger.security.error("Duplicate digest generation failed with unknown error.")
+            return nil
+        }
+    }
+
     func resetLastError() {
         lastError = nil
     }
@@ -385,6 +413,15 @@ final class SecurityManager: @unchecked Sendable {
             accessibility: keyAccessibility
         )
         return newKey
+    }
+
+    private static func duplicateDigestKey(from encryptionKey: SymmetricKey) -> SymmetricKey {
+        HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: encryptionKey,
+            salt: Data(),
+            info: duplicateDigestKeyInfo,
+            outputByteCount: 32
+        )
     }
 
     private func getExistingEncryptionKey() throws -> SymmetricKey {
