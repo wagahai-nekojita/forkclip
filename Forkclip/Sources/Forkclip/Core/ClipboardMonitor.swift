@@ -5,6 +5,7 @@ import AppKit
 protocol PasteboardProviding: AnyObject {
     var changeCount: Int { get }
     var availableTypes: [NSPasteboard.PasteboardType] { get }
+    func monitoredChangeCount() throws -> Int
     func string(forType type: NSPasteboard.PasteboardType) -> String?
     func data(forType type: NSPasteboard.PasteboardType) -> Data?
     func fallbackImageData() -> Data?
@@ -14,6 +15,13 @@ protocol PasteboardProviding: AnyObject {
     func setString(_ string: String, forType type: NSPasteboard.PasteboardType) -> Bool
     @discardableResult
     func setData(_ data: Data?, forType type: NSPasteboard.PasteboardType) -> Bool
+}
+
+@MainActor
+extension PasteboardProviding {
+    func monitoredChangeCount() throws -> Int {
+        changeCount
+    }
 }
 
 extension NSPasteboard: PasteboardProviding {
@@ -301,7 +309,7 @@ protocol ClipboardMonitorSchedule {
 
 @MainActor
 protocol ClipboardMonitorScheduling {
-    func scheduleRepeating(every interval: TimeInterval, onTick: @escaping @MainActor () -> Void) -> ClipboardMonitorSchedule
+    func scheduleRepeating(every interval: TimeInterval, onTick: @escaping @MainActor () -> Void) throws -> ClipboardMonitorSchedule
 }
 
 @MainActor
@@ -319,7 +327,7 @@ private final class TimerClipboardMonitorSchedule: ClipboardMonitorSchedule {
 
 @MainActor
 struct RunLoopClipboardMonitorScheduler: ClipboardMonitorScheduling {
-    func scheduleRepeating(every interval: TimeInterval, onTick: @escaping @MainActor () -> Void) -> ClipboardMonitorSchedule {
+    func scheduleRepeating(every interval: TimeInterval, onTick: @escaping @MainActor () -> Void) throws -> ClipboardMonitorSchedule {
         let timer = Timer(timeInterval: interval, repeats: true) { _ in
             Task { @MainActor in
                 onTick()
@@ -363,11 +371,15 @@ final class ClipboardMonitor {
         state = .starting
         AppLogger.app.notice("Clipboard monitor start requested.")
 
-        schedule = scheduler.scheduleRepeating(every: pollInterval) { [weak self] in
-            self?.pollPasteboard()
+        do {
+            schedule = try scheduler.scheduleRepeating(every: pollInterval) { [weak self] in
+                self?.pollPasteboard()
+            }
+            state = .monitoring
+            AppLogger.app.notice("Clipboard monitor started.")
+        } catch {
+            markFailure("Unable to schedule clipboard polling: \(error.localizedDescription)")
         }
-        state = .monitoring
-        AppLogger.app.notice("Clipboard monitor started.")
     }
 
     func stop() {
@@ -378,7 +390,14 @@ final class ClipboardMonitor {
     }
 
     func pollPasteboard() {
-        let changeCount = pasteboard.changeCount
+        let changeCount: Int
+        do {
+            changeCount = try pasteboard.monitoredChangeCount()
+        } catch {
+            markFailure("Unable to read pasteboard change count: \(error.localizedDescription)")
+            return
+        }
+
         guard changeCount != lastObservedChangeCount else { return }
 
         lastObservedChangeCount = changeCount
@@ -387,6 +406,8 @@ final class ClipboardMonitor {
     }
 
     func markFailure(_ message: String) {
+        schedule?.invalidate()
+        schedule = nil
         state = .failed(message)
         AppLogger.app.error("Clipboard monitor failed: \(message, privacy: .public)")
     }
