@@ -156,7 +156,7 @@ jobs:
           codex exec \
             --cd "$GITHUB_WORKSPACE" \
             --sandbox read-only \
-            --ask-for-approval never \
+            --config 'approval_policy="never"' \
             --model "$CODEX_MODEL" \
             --config "model_reasoning_effort=\"$CODEX_REASONING_EFFORT\"" \
             --config 'web_search="disabled"' \
