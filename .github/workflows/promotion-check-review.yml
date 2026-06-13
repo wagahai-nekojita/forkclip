@@ -138,7 +138,7 @@ jobs:
           Critical claims include permission boundaries, security, secrets/private paths, validation pass/fail, scope boundaries, safe-to-delete/change claims, model/config/workflow bindings, and required-check policy.
 
           Return result "pass" only when all critical anchors verify, sampled normal anchors verify, and unknowns are explicitly listed.
-          Return result "fail" when any checked anchor fails, a critical claim lacks a re-checkable anchor, required inputs cannot be read, or the review cannot be completed.
+          Anchor verifiability rule: you can only re-check anchors inside the trusted local inputs. Claims citing local or external command results (exit codes, test runs, gh or API output) that cannot be re-run from those inputs are UNKNOWNS, not failures — deterministic re-execution is CI gate's job. Return result "fail" when an anchor inside the trusted inputs contradicts its claim, when a claim about the diff content lacks any in-input anchor, when required inputs cannot be read, or when the review cannot be completed.
 
           Put the full PR comment body in comment_markdown. Keep it under 6000 characters. It must start with "## Promotion-check review", include the result, checked anchors, failures, and unknowns, and state that this is judgment evidence; CI gate remains required deterministic evidence.
 
