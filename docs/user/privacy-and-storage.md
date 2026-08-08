@@ -16,7 +16,7 @@ Forkclip creates its Application Support and backup directories with owner-only 
 
 ## Encryption
 
-Forkclip uses a symmetric key stored in the macOS Keychain under the Forkclip service. Text, URL, file URL, RTF, HTML, image payload bytes, and optional Display Titles are encrypted before persistence. New encrypted rows bind ciphertext to row identity with AES-GCM authenticated data, so item content and Display Titles are tied to the item ID, and payload bytes are tied to their item ID and payload ID. Existing legacy ciphertext without authenticated row context remains readable. Queryable payload metadata is limited to content type, pasteboard type, rank, byte size, and the item's primary display type. If the key is missing or inaccessible, history may fail to decrypt. The diagnostics panel shows Keychain and decryption status.
+Forkclip uses a symmetric key stored in the macOS Keychain under the Forkclip service. Text, URL, file URL, RTF, HTML, image payload bytes, and optional Display Titles are encrypted before persistence. New encrypted rows bind ciphertext to row identity with AES-GCM authenticated data, so item content and Display Titles are tied to the item ID, and payload bytes are tied to their item ID and payload ID. When an older database is opened, schema 12 rewrites legacy unbound rows in one transaction; normal reads do not accept unbound ciphertext after that migration. Queryable payload metadata is limited to content type, pasteboard type, rank, byte size, and the item's primary display type. If the key is missing or inaccessible, history may fail to decrypt. The diagnostics panel shows Keychain and decryption status.
 
 Forkclip also stores local metadata for each history item: capture count and last-captured time for repeated external clipboard captures, plus usage count and last-used time for explicit copies from saved history. Usage metadata is updated only when a saved history item is explicitly copied through Forkclip. Display Title text is not stored as plaintext metadata.
 
@@ -43,6 +43,13 @@ Forkclip saves plain text, URL text, file URLs, RTF, HTML, and common image past
 
 For non-text-only items, Forkclip keeps a safe display label such as `画像`, `HTML`, or a file name in the encrypted item preview rather than exposing raw payload bytes as preview text. Payload-row preview metadata is not stored in v1.
 
+Forkclip places limits on clipboard work before encryption and again before
+database writes: plain text and URL/file URLs are limited to 1 MiB, RTF/HTML to
+4 MiB, one image to 16 MiB, and one clipboard change to 20 MiB total. Images
+also have dimension and decoded-pixel limits. Oversized content is skipped and
+shown as a capacity-limited save result in diagnostics. Thumbnails use bounded
+ImageIO decoding and a bounded in-memory cache.
+
 ## Private Mode
 
 Private mode temporarily stops saving new clipboard changes while `非公開` is on. Existing saved history remains available. When private mode is enabled, Forkclip skips the new clipboard change before reading text or payload bytes from the pasteboard.
@@ -53,8 +60,8 @@ The blacklist prevents saving clipboard changes from sensitive apps. Forkclip ch
 
 Blacklist entries match complete bundle identifiers or child bundle identifier prefixes. For example, `com.example.SecretApp` matches `com.example.secretapp` and `com.example.secretapp.helper`, but not `com.example.notsecretapp`.
 
-Forkclip also respects the pasteboard type marker `org.nspasteboard.ConcealedType` and skips those clipboard changes before reading payload data.
+Forkclip also respects the pasteboard type marker `org.nspasteboard.ConcealedType` and skips those clipboard changes before reading payload data. The source application identity is captured with the change notification; if macOS cannot identify it, Forkclip skips the change rather than guessing. This prevents a later focus switch from changing the blacklist decision for an earlier copy.
 
 ## Retention
 
-Retention settings limit stored items by count and age. The default keeps up to 100 items and removes items older than 14 days. Favorite items are protected from automatic retention cleanup, but explicit delete still removes them.
+Retention settings limit stored items by count and age. The default keeps up to 100 items and removes items older than 14 days. Favorite items are protected from automatic retention cleanup, but explicit delete still removes them. Stored payloads also have a 256 MiB quota; when it is exceeded, the oldest non-favorite history is removed first. Favorites are not quota-cleanup targets. If favorites plus the item being saved already exceed the quota, the new save fails instead of deleting a favorite.

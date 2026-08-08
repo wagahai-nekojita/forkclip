@@ -36,7 +36,18 @@ extension NSPasteboard: PasteboardProviding {
     }
 
     func fallbackImageData() -> Data? {
-        NSImage(pasteboard: self)?.tiffRepresentation
+        let imageTypes: [NSPasteboard.PasteboardType] = [
+            .tiff,
+            .png,
+            NSPasteboard.PasteboardType(rawValue: "public.jpeg"),
+            NSPasteboard.PasteboardType(rawValue: "public.heic")
+        ]
+        for type in imageTypes {
+            if let data = data(forType: type), !data.isEmpty {
+                return data
+            }
+        }
+        return nil
     }
 }
 
@@ -45,10 +56,17 @@ struct ClipboardCaptureSnapshot: Equatable {
     let previewText: String?
     let contentTypes: [ClipboardContentType]
     let unsupportedTypeNames: [String]
+    let resourceLimitTypeNames: [String]
     let payloads: [ClipboardPayload]
 
     var hasNonTextContent: Bool {
-        contentTypes.contains { $0 != .plainText } || !unsupportedTypeNames.isEmpty
+        contentTypes.contains { $0 != .plainText }
+            || !unsupportedTypeNames.isEmpty
+            || !resourceLimitTypeNames.isEmpty
+    }
+
+    var hasResourceLimitViolation: Bool {
+        !resourceLimitTypeNames.isEmpty
     }
 
     var hasSupportedContent: Bool {
@@ -68,9 +86,21 @@ struct ClipboardCaptureSnapshot: Equatable {
         from pasteboard: PasteboardProviding,
         metadata: ClipboardPasteboardMetadata? = nil
     ) -> ClipboardCaptureSnapshot {
-        let text = pasteboard.string(forType: .string)
+        let rawText = pasteboard.string(forType: .string)
+        let text = rawText.flatMap {
+            ClipboardResourceLimits.accepts($0) ? $0 : nil
+        }
         let pasteboardTypes = metadata?.availableTypes ?? pasteboard.availableTypes
-        let capturedPayloads = rankedPayloads(from: pasteboard, pasteboardTypes: pasteboardTypes, plainText: text)
+        var resourceLimitTypeNames: [String] = []
+        if rawText != nil, text == nil {
+            resourceLimitTypeNames.append(NSPasteboard.PasteboardType.string.rawValue)
+        }
+        let capturedPayloads = rankedPayloads(
+            from: pasteboard,
+            pasteboardTypes: pasteboardTypes,
+            plainText: text,
+            resourceLimitTypeNames: &resourceLimitTypeNames
+        )
         var contentTypes = capturedPayloads.map(\.contentType)
 
         if let text, !text.isEmpty, !contentTypes.contains(.plainText) {
@@ -86,6 +116,7 @@ struct ClipboardCaptureSnapshot: Equatable {
             previewText: previewText(for: capturedPayloads, plainText: text),
             contentTypes: unique(contentTypes),
             unsupportedTypeNames: unsupportedTypeNames,
+            resourceLimitTypeNames: uniqueStrings(resourceLimitTypeNames),
             payloads: capturedPayloads
         )
     }
@@ -113,16 +144,26 @@ struct ClipboardCaptureSnapshot: Equatable {
     private static func rankedPayloads(
         from pasteboard: PasteboardProviding,
         pasteboardTypes: [NSPasteboard.PasteboardType],
-        plainText: String?
+        plainText: String?,
+        resourceLimitTypeNames: inout [String]
     ) -> [ClipboardPayload] {
         var unranked: [ClipboardPayload] = []
 
-        if let imagePayload = imagePayload(from: pasteboard, pasteboardTypes: pasteboardTypes) {
+        if let imagePayload = imagePayload(
+            from: pasteboard,
+            pasteboardTypes: pasteboardTypes,
+            resourceLimitTypeNames: &resourceLimitTypeNames
+        ) {
             unranked.append(imagePayload)
         }
 
         for type in preferredNonImageTypes where pasteboardTypes.contains(type.pasteboardType) {
-            guard let data = payloadData(for: type.pasteboardType, from: pasteboard) else { continue }
+            guard let data = payloadData(
+                for: type.pasteboardType,
+                contentType: type.contentType,
+                from: pasteboard,
+                resourceLimitTypeNames: &resourceLimitTypeNames
+            ) else { continue }
             unranked.append(ClipboardPayload(
                 contentType: type.contentType,
                 pasteboardType: type.pasteboardType,
@@ -146,7 +187,18 @@ struct ClipboardCaptureSnapshot: Equatable {
             unranked.append(.plainText(plainText))
         }
 
-        return unranked.enumerated().map { index, payload in
+        var boundedPayloads: [ClipboardPayload] = []
+        var totalBytes = 0
+        for payload in unranked {
+            guard payload.data.count <= ClipboardResourceLimits.maxCaptureBytes - totalBytes else {
+                resourceLimitTypeNames.append(payload.pasteboardType.rawValue)
+                continue
+            }
+            totalBytes += payload.data.count
+            boundedPayloads.append(payload)
+        }
+
+        return boundedPayloads.enumerated().map { index, payload in
             ClipboardPayload(
                 id: payload.id,
                 contentType: payload.contentType,
@@ -175,11 +227,17 @@ struct ClipboardCaptureSnapshot: Equatable {
     @MainActor
     private static func imagePayload(
         from pasteboard: PasteboardProviding,
-        pasteboardTypes: [NSPasteboard.PasteboardType]
+        pasteboardTypes: [NSPasteboard.PasteboardType],
+        resourceLimitTypeNames: inout [String]
     ) -> ClipboardPayload? {
         let availableImageTypes = preferredImageTypes.filter { pasteboardTypes.contains($0) }
         for type in availableImageTypes {
-            guard let data = payloadData(for: type, from: pasteboard) else { continue }
+            guard let data = payloadData(
+                for: type,
+                contentType: .image,
+                from: pasteboard,
+                resourceLimitTypeNames: &resourceLimitTypeNames
+            ) else { continue }
             return ClipboardPayload(
                 contentType: .image,
                 pasteboardType: type,
@@ -194,6 +252,10 @@ struct ClipboardCaptureSnapshot: Equatable {
               !data.isEmpty else {
             return nil
         }
+        guard ClipboardResourceLimits.accepts(data, for: .image) else {
+            resourceLimitTypeNames.append(availableImageTypes[0].rawValue)
+            return nil
+        }
         return ClipboardPayload(
             contentType: .image,
             pasteboardType: .tiff,
@@ -204,14 +266,28 @@ struct ClipboardCaptureSnapshot: Equatable {
     }
 
     @MainActor
-    private static func payloadData(for type: NSPasteboard.PasteboardType, from pasteboard: PasteboardProviding) -> Data? {
+    private static func payloadData(
+        for type: NSPasteboard.PasteboardType,
+        contentType: ClipboardContentType,
+        from pasteboard: PasteboardProviding,
+        resourceLimitTypeNames: inout [String]
+    ) -> Data? {
         if let data = pasteboard.data(forType: type), !data.isEmpty {
+            guard ClipboardResourceLimits.accepts(data, for: contentType) else {
+                resourceLimitTypeNames.append(type.rawValue)
+                return nil
+            }
             return data
         }
         guard let string = pasteboard.string(forType: type), !string.isEmpty else {
             return nil
         }
-        return Data(string.utf8)
+        guard ClipboardResourceLimits.accepts(string, for: contentType),
+              let data = string.data(using: .utf8) else {
+            resourceLimitTypeNames.append(type.rawValue)
+            return nil
+        }
+        return data
     }
 
     private static func preview(for contentType: ClipboardContentType, data: Data) -> String {
@@ -260,6 +336,14 @@ struct ClipboardCaptureSnapshot: Equatable {
             }
         }
     }
+
+    private static func uniqueStrings(_ values: [String]) -> [String] {
+        values.reduce(into: []) { result, value in
+            if !result.contains(value) {
+                result.append(value)
+            }
+        }
+    }
 }
 
 struct ClipboardPasteboardMetadata: Equatable {
@@ -281,6 +365,11 @@ struct ClipboardPasteboardMetadata: Equatable {
     static func read(from pasteboard: PasteboardProviding) -> ClipboardPasteboardMetadata {
         ClipboardPasteboardMetadata(availableTypes: pasteboard.availableTypes)
     }
+}
+
+struct ClipboardChangeEvent: Equatable, Sendable {
+    let changeCount: Int
+    let sourceBundleIdentifier: String?
 }
 
 @MainActor
@@ -341,9 +430,10 @@ struct RunLoopClipboardMonitorScheduler: ClipboardMonitorScheduling {
 @MainActor
 final class ClipboardMonitor {
     private let pasteboard: PasteboardProviding
+    private let frontmostApplicationProvider: FrontmostApplicationProviding
     private let pollInterval: TimeInterval
     private let scheduler: ClipboardMonitorScheduling
-    private let onChange: @MainActor (Int) -> Void
+    private let onChange: @MainActor (ClipboardChangeEvent) -> Void
     private var schedule: ClipboardMonitorSchedule?
 
     private(set) var state: ClipboardMonitorState = .stopped
@@ -353,9 +443,11 @@ final class ClipboardMonitor {
         pasteboard: PasteboardProviding,
         pollInterval: TimeInterval = 0.5,
         scheduler: ClipboardMonitorScheduling = RunLoopClipboardMonitorScheduler(),
-        onChange: @escaping @MainActor (Int) -> Void
+        frontmostApplicationProvider: FrontmostApplicationProviding = WorkspaceFrontmostApplicationProvider(),
+        onChange: @escaping @MainActor (ClipboardChangeEvent) -> Void
     ) {
         self.pasteboard = pasteboard
+        self.frontmostApplicationProvider = frontmostApplicationProvider
         self.pollInterval = pollInterval
         self.scheduler = scheduler
         self.onChange = onChange
@@ -402,7 +494,10 @@ final class ClipboardMonitor {
 
         lastObservedChangeCount = changeCount
         AppLogger.app.debug("Clipboard change observed: \(changeCount, privacy: .public)")
-        onChange(changeCount)
+        onChange(ClipboardChangeEvent(
+            changeCount: changeCount,
+            sourceBundleIdentifier: frontmostApplicationProvider.frontmostBundleIdentifier()
+        ))
     }
 
     func markFailure(_ message: String) {

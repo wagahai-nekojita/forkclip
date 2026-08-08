@@ -7,6 +7,7 @@ enum SchemaMigrationError: LocalizedError, Equatable {
     case legacyItemPayloadMigrationFailed(itemID: UUID)
     case legacyPlainTextPayloadRewriteFailed(payloadID: UUID, itemID: UUID)
     case duplicateDigestBackfillFailed(itemID: UUID)
+    case legacyCiphertextReencryptionFailed(table: String, rowID: UUID)
 
     var errorDescription: String? {
         switch self {
@@ -18,6 +19,8 @@ enum SchemaMigrationError: LocalizedError, Equatable {
             return "legacy plain text payload rewrite failed. (payloadID: \(payloadID.uuidString), itemID: \(itemID.uuidString))"
         case .duplicateDigestBackfillFailed(let itemID):
             return "duplicate digest backfill failed. (itemID: \(itemID.uuidString))"
+        case .legacyCiphertextReencryptionFailed(let table, let rowID):
+            return "legacy ciphertext re-encryption failed. (table: \(table), rowID: \(rowID.uuidString))"
         }
     }
 }
@@ -90,6 +93,7 @@ struct SchemaMigrator {
             if version < 10 { try addDisplayTitleColumnIfNeeded(in: db) }
             if version < 11 { try addQueryPathIndexesIfNeeded(in: db) }
             if version < 12 { try addDuplicateDigestColumnAndIndexIfNeeded(in: db) }
+            try rewriteLegacyCiphertextsIfNeeded(in: db)
 
             try setUserVersion(Self.currentSchemaVersion, in: db)
         }
@@ -202,7 +206,7 @@ struct SchemaMigrator {
         var backfills: [(itemID: UUID, digest: String)] = []
         for row in rows {
             let itemID = row[id]
-            guard let decryptedContent = security.decrypt(
+            guard let decryptedContent = decryptForMigration(
                 row[content],
                 context: .itemContent(itemID: itemID)
             ) else {
@@ -329,7 +333,7 @@ struct SchemaMigrator {
             guard try db.scalar(existingPayloads.count) == 0 else { continue }
             let itemID = itemRow[id]
             let newPayloadID = UUID()
-            guard let decryptedContent = security.decrypt(
+            guard let decryptedContent = decryptForMigration(
                     itemRow[content],
                     context: .itemContent(itemID: itemID)
                   ),
@@ -366,7 +370,7 @@ struct SchemaMigrator {
         for row in legacyRows {
             let itemID = row[payloadItemID]
             let legacyPayloadID = row[payloadID]
-            guard let payloadText = security.decrypt(
+            guard let payloadText = decryptForMigration(
                 row[payloadEncryptedData],
                 context: .payloadData(itemID: itemID, payloadID: legacyPayloadID)
             ) else {
@@ -374,7 +378,7 @@ struct SchemaMigrator {
                 throw SchemaMigrationError.legacyPlainTextPayloadRewriteFailed(payloadID: legacyPayloadID, itemID: itemID)
             }
             guard let itemRow = try db.pluck(items.select(content).filter(id == itemID)),
-                  let itemText = security.decrypt(
+                  let itemText = decryptForMigration(
                     itemRow[content],
                     context: .itemContent(itemID: itemID)
                   ) else {
@@ -404,6 +408,52 @@ struct SchemaMigrator {
                         payloadByteSize <- rewrite.byteSize
                     )
             )
+        }
+    }
+
+    private func decryptForMigration(_ ciphertext: String, context: EncryptionContext) -> String? {
+        if let decrypted = security.decrypt(ciphertext, context: context) {
+            return decrypted
+        }
+        return security.decryptLegacy(ciphertext)
+    }
+
+    private func rewriteLegacyCiphertextsIfNeeded(in db: Connection) throws {
+        let itemRows = try db.prepare(items.select(id, content, displayTitle))
+        for row in itemRows {
+            let itemID = row[id]
+            if !SecurityManager.isAuthenticatedCiphertext(row[content]) {
+                guard let plaintext = security.decryptLegacy(row[content]),
+                      let rewritten = security.encrypt(plaintext, context: .itemContent(itemID: itemID)) else {
+                    throw SchemaMigrationError.legacyCiphertextReencryptionFailed(table: "clipboard_items.content", rowID: itemID)
+                }
+                try db.run(items.filter(id == itemID).update(content <- rewritten))
+            }
+            if let encryptedDisplayTitle = row[displayTitle],
+               !SecurityManager.isAuthenticatedCiphertext(encryptedDisplayTitle) {
+                guard let plaintext = security.decryptLegacy(encryptedDisplayTitle),
+                      let rewritten = security.encrypt(plaintext, context: .itemDisplayTitle(itemID: itemID)) else {
+                    throw SchemaMigrationError.legacyCiphertextReencryptionFailed(table: "clipboard_items.display_title", rowID: itemID)
+                }
+                try db.run(items.filter(id == itemID).update(displayTitle <- rewritten))
+            }
+        }
+
+        let payloadRows = try db.prepare(payloads.select(payloadID, payloadItemID, payloadEncryptedData))
+        for row in payloadRows {
+            let legacyPayloadID = row[payloadID]
+            let itemID = row[payloadItemID]
+            guard !SecurityManager.isAuthenticatedCiphertext(row[payloadEncryptedData]) else {
+                continue
+            }
+            guard let plaintext = security.decryptLegacy(row[payloadEncryptedData]),
+                  let rewritten = security.encrypt(
+                    plaintext,
+                    context: .payloadData(itemID: itemID, payloadID: legacyPayloadID)
+                  ) else {
+                throw SchemaMigrationError.legacyCiphertextReencryptionFailed(table: "clipboard_payloads.encrypted_data", rowID: legacyPayloadID)
+            }
+            try db.run(payloads.filter(self.payloadID == legacyPayloadID).update(payloadEncryptedData <- rewritten))
         }
     }
 

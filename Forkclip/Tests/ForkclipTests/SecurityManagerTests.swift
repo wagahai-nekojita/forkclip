@@ -221,15 +221,13 @@ final class SecurityManagerTests: XCTestCase {
         XCTAssertFalse(manager.isLikelySecret("this is a regular sentence for clipboard history"))
     }
 
-    func testEncryptionContextRejectsMismatchAndReadsLegacyCiphertext() throws {
+    func testEncryptionContextRejectsLegacyCiphertextUntilMigration() throws {
         let itemID = UUID()
         let otherItemID = UUID()
         let legacyCiphertext = try XCTUnwrap(security.encrypt("legacy value"))
 
-        XCTAssertEqual(
-            security.decrypt(legacyCiphertext, context: .itemContent(itemID: itemID)),
-            "legacy value"
-        )
+        XCTAssertNil(security.decrypt(legacyCiphertext, context: .itemContent(itemID: itemID)))
+        XCTAssertEqual(security.decryptLegacy(legacyCiphertext), "legacy value")
 
         let boundCiphertext = try XCTUnwrap(security.encrypt(
             "bound value",
@@ -393,12 +391,13 @@ struct SecurityManagerTests {
     }
 
     @Test
-    func encryptionContextRejectsMismatchAndReadsLegacyCiphertext() throws {
+    func legacyCiphertextRequiresMigration() throws {
         let itemID = UUID()
         let otherItemID = UUID()
         let legacyCiphertext = try #require(security.encrypt("legacy value"))
 
-        #expect(security.decrypt(legacyCiphertext, context: .itemContent(itemID: itemID)) == "legacy value")
+        #expect(security.decrypt(legacyCiphertext, context: .itemContent(itemID: itemID)) == nil)
+        #expect(security.decryptLegacy(legacyCiphertext) == "legacy value")
 
         let boundCiphertext = try #require(security.encrypt(
             "bound value",

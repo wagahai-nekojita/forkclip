@@ -98,10 +98,12 @@ enum ClipboardPersistenceError: LocalizedError, Equatable, Sendable {
     case itemEncryptionFailed(SecurityManager.SecurityError?)
     case displayTitleEncryptionFailed(SecurityManager.SecurityError?)
     case itemDigestFailed(SecurityManager.SecurityError?)
+    case payloadResourceLimitExceeded(contentType: ClipboardContentType, byteSize: Int, limit: Int)
     case payloadEncryptionFailed(contentType: ClipboardContentType, pasteboardType: String, securityError: SecurityManager.SecurityError?)
     case itemWriteFailed(String)
     case payloadWriteFailed(contentType: ClipboardContentType, pasteboardType: String, underlying: String)
     case retentionPolicyFailed(String)
+    case payloadQuotaExceeded(totalBytes: Int, limit: Int)
     case databaseWriteFailed(String)
 
     var errorDescription: String? {
@@ -114,6 +116,8 @@ enum ClipboardPersistenceError: LocalizedError, Equatable, Sendable {
             return securityError?.localizedDescription ?? "表示名の暗号化に失敗しました。"
         case .itemDigestFailed(let securityError):
             return securityError?.localizedDescription ?? "重複検出用の要約生成に失敗しました。"
+        case .payloadResourceLimitExceeded(let contentType, let byteSize, let limit):
+            return "ペイロードが容量制限を超えています。(\(contentType.rawValue), \(byteSize) bytes > \(limit) bytes)"
         case .payloadEncryptionFailed(let contentType, let pasteboardType, let securityError):
             let baseMessage = securityError?.localizedDescription ?? "ペイロードの暗号化に失敗しました。"
             return "\(baseMessage) (\(contentType.rawValue)/\(pasteboardType))"
@@ -123,6 +127,8 @@ enum ClipboardPersistenceError: LocalizedError, Equatable, Sendable {
             return "ペイロードの保存に失敗しました。(\(contentType.rawValue)/\(pasteboardType)) \(underlying)"
         case .retentionPolicyFailed(let underlying):
             return "保存後の保持ポリシー適用に失敗しました。\(underlying)"
+        case .payloadQuotaExceeded(let totalBytes, let limit):
+            return "履歴の保存容量上限を超えています。(\(totalBytes) bytes > \(limit) bytes)"
         case .databaseWriteFailed(let underlying):
             return "DB 書き込みに失敗しました。\(underlying)"
         }
@@ -199,8 +205,12 @@ class ClipboardManager: ObservableObject {
     private let frontmostApplicationProvider: FrontmostApplicationProviding
     private let autoPasteCoordinator: AutoPasteCoordinating
     private let monitorScheduler: ClipboardMonitorScheduling
-    private lazy var monitor = ClipboardMonitor(pasteboard: pasteboard, scheduler: monitorScheduler) { [weak self] changeCount in
-        self?.handleClipboardChange(changeCount: changeCount)
+    private lazy var monitor = ClipboardMonitor(
+        pasteboard: pasteboard,
+        scheduler: monitorScheduler,
+        frontmostApplicationProvider: frontmostApplicationProvider
+    ) { [weak self] event in
+        self?.handleClipboardChange(event: event)
     }
     private var ignoredChangeCount: Int?
     private var lastProcessedChangeDate: Date?
@@ -396,15 +406,30 @@ class ClipboardManager: ObservableObject {
         await loadFolders()
     }
 
-    func handleClipboardChange(changeCount: Int) {
+    func handleClipboardChange(event: ClipboardChangeEvent) {
         lastProcessedChangeDate = Date()
         pendingClipboardTask = Task { @MainActor [weak self] in
-            await self?.handleNewClipboardItem(changeCount: changeCount)
+            await self?.handleNewClipboardItem(event: event)
         }
+    }
+
+    func handleClipboardChange(changeCount: Int) {
+        handleClipboardChange(event: ClipboardChangeEvent(
+            changeCount: changeCount,
+            sourceBundleIdentifier: frontmostApplicationProvider.frontmostBundleIdentifier()
+        ))
     }
 
     func handleNewClipboardItem(changeCount: Int? = nil) async {
         let currentChangeCount = changeCount ?? pasteboard.changeCount
+        await handleNewClipboardItem(event: ClipboardChangeEvent(
+            changeCount: currentChangeCount,
+            sourceBundleIdentifier: frontmostApplicationProvider.frontmostBundleIdentifier()
+        ))
+    }
+
+    private func handleNewClipboardItem(event: ClipboardChangeEvent) async {
+        let currentChangeCount = event.changeCount
         if ignoredChangeCount == currentChangeCount {
             ignoredChangeCount = nil
             lastSaveStatus = .selfCopyIgnored
@@ -420,12 +445,19 @@ class ClipboardManager: ObservableObject {
             return
         }
 
-        let bundleID = frontmostApplicationProvider.frontmostBundleIdentifier()
+        guard let bundleID = event.sourceBundleIdentifier else {
+            lastSaveStatus = .sourceApplicationUnknownSkipped
+            lastSaveError = "unknown-source"
+            AppLogger.app.debug("Ignored clipboard item because the source application was not identifiable.")
+            await refreshDiagnostics()
+            updateStatusMessage()
+            return
+        }
 
         if security.isApplicationBlacklisted(bundleID) {
             lastSaveStatus = .blacklistedApplicationIgnored
             lastSaveError = bundleID
-            AppLogger.app.debug("Ignored clipboard item from blacklisted app \(bundleID ?? "unknown", privacy: .public)")
+            AppLogger.app.debug("Ignored clipboard item from blacklisted app \(bundleID, privacy: .public)")
             await refreshDiagnostics()
             return
         }
@@ -445,11 +477,18 @@ class ClipboardManager: ObservableObject {
         if !capture.unsupportedTypeNames.isEmpty {
             AppLogger.app.debug("Unsupported pasteboard types ignored: \(capture.unsupportedTypeNames.joined(separator: ","), privacy: .public)")
         }
+        if !capture.resourceLimitTypeNames.isEmpty {
+            AppLogger.app.debug("Pasteboard types exceeded resource limits: \(capture.resourceLimitTypeNames.joined(separator: ","), privacy: .public)")
+        }
 
         guard capture.hasSupportedContent,
               let previewText = capture.previewText,
               !previewText.isEmpty else {
-            if capture.hasNonTextContent {
+            if capture.hasResourceLimitViolation {
+                lastSaveStatus = .resourceLimitSkipped
+                lastSaveError = captureDiagnosticsDescription(capture)
+                AppLogger.app.debug("Ignored oversized clipboard change: \(self.lastSaveError ?? "unknown", privacy: .public)")
+            } else if capture.hasNonTextContent {
                 lastSaveStatus = .unsupportedContentSkipped
                 lastSaveError = captureDiagnosticsDescription(capture)
                 AppLogger.app.debug("Ignored unsupported clipboard change: \(self.lastSaveError ?? "unknown", privacy: .public)")
@@ -520,7 +559,7 @@ class ClipboardManager: ObservableObject {
     private func captureDiagnosticsDescription(_ capture: ClipboardCaptureSnapshot) -> String {
         let supported = capture.contentTypes.map(\.rawValue)
         let unsupported = capture.unsupportedTypeNames
-        return (supported + unsupported).joined(separator: ",")
+        return (supported + unsupported + capture.resourceLimitTypeNames).joined(separator: ",")
     }
 
     private func loadInitialState() async {
@@ -708,6 +747,10 @@ class ClipboardManager: ObservableObject {
             imageThumbnailCache.removeValue(forKey: itemID)
             imageThumbnailMisses.insert(itemID)
             return
+        }
+        if imageThumbnailCache.count >= ClipboardResourceLimits.maxThumbnailCacheEntries,
+           let oldestID = imageThumbnailCache.keys.first {
+            imageThumbnailCache.removeValue(forKey: oldestID)
         }
         imageThumbnailCache[itemID] = thumbnail
         imageThumbnailMisses.remove(itemID)

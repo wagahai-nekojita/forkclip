@@ -9,6 +9,7 @@ These are local development release notes for repository-built Forkclip app bund
 - Reset the local persistence identity to `~/Library/Application Support/Forkclip/forkclip.sqlite` and the Keychain service to `com.user.forkclip.encryption`.
 - Removed automatic legacy data and Keychain lookup from production startup; earlier local data remains untouched but is not imported by Forkclip.
 - Rebuilt app icons, `AppIcon.icns`, and the menu bar template icon from `Forkclip/Assets/forkclip-icon.png`.
+- Added clipboard resource bounds, bounded image thumbnails, source-identity and Auto Paste race checks, non-favorite payload-quota cleanup, retention-policy normalization, and schema 12 legacy-ciphertext re-encryption.
 
 ## 0.4.0
 
