@@ -19,7 +19,11 @@ enum ClipboardOperationStatus: Equatable, Sendable {
     case selfCopyIgnored
     case privateModeSkipped
     case blacklistedApplicationIgnored
+    case sourceApplicationUnknownSkipped
+    case clipboardChangedDuringCaptureSkipped
     case concealedContentSkipped
+    case resourceLimitSkipped
+    case partialResourceLimitSaved
     case unsupportedContentSkipped
     case emptyStringIgnored
     case duplicateIgnored

@@ -51,6 +51,8 @@ protocol ClipboardCryptographyProviding: AnyObject, Sendable {
     var lastError: SecurityManager.SecurityError? { get }
     func encrypt(_ text: String, context: EncryptionContext?) -> String?
     func decrypt(_ base64Encoded: String, context: EncryptionContext?) -> String?
+    /// Explicit compatibility path used only by the transactional legacy rewrite.
+    func decryptLegacy(_ base64Encoded: String) -> String?
     func duplicateContentDigest(for text: String) -> String?
     func currentKeyState() -> SecurityKeyState
     func replaceMissingKey() -> Bool
@@ -150,6 +152,10 @@ final class SecurityManager: @unchecked Sendable {
 
     static let shared = SecurityManager()
     private static let authenticatedCiphertextPrefix = "forkclip-aad-v1:"
+
+    static func isAuthenticatedCiphertext(_ value: String) -> Bool {
+        value.hasPrefix(authenticatedCiphertextPrefix)
+    }
     private static let duplicateDigestKeyInfo = Data("forkclip.v1.duplicate-content-digest.key".utf8)
     private static let duplicateDigestMessagePrefix = Data("forkclip.v1.clipboard_items.duplicate_digest\u{1f}".utf8)
     private static let defaultBlacklistBundleIDs = [
@@ -185,6 +191,7 @@ final class SecurityManager: @unchecked Sendable {
         case keyLoadFailed(OSStatus)
         case keyMissing
         case invalidCiphertext
+        case legacyCiphertextRequiresMigration
         case decryptFailed
 
         var errorDescription: String? {
@@ -199,6 +206,8 @@ final class SecurityManager: @unchecked Sendable {
                 return "暗号鍵が見つかりません。既存データを復号できない可能性があります。"
             case .invalidCiphertext:
                 return "保存データの形式が不正です。"
+            case .legacyCiphertextRequiresMigration:
+                return "旧形式の保存データは行単位の再暗号化が必要です。"
             case .decryptFailed:
                 return "保存データの復号に失敗しました。"
             }
@@ -282,6 +291,9 @@ final class SecurityManager: @unchecked Sendable {
         do {
             let key = try getExistingEncryptionKey()
             let isAuthenticatedCiphertext = base64Encoded.hasPrefix(Self.authenticatedCiphertextPrefix)
+            if !isAuthenticatedCiphertext, context != nil {
+                throw SecurityError.legacyCiphertextRequiresMigration
+            }
             let encodedCiphertext = isAuthenticatedCiphertext
                 ? String(base64Encoded.dropFirst(Self.authenticatedCiphertextPrefix.count))
                 : base64Encoded
@@ -312,6 +324,15 @@ final class SecurityManager: @unchecked Sendable {
             AppLogger.security.error("Decryption failed with unknown error.")
             return nil
         }
+    }
+
+    func decryptLegacy(_ base64Encoded: String) -> String? {
+        guard !base64Encoded.hasPrefix(Self.authenticatedCiphertextPrefix) else {
+            lastError = .legacyCiphertextRequiresMigration
+            keyState = .failed
+            return nil
+        }
+        return decrypt(base64Encoded, context: nil)
     }
 
     func duplicateContentDigest(for text: String) -> String? {

@@ -35,6 +35,10 @@ extension DiagnosticsSnapshot {
 }
 
 struct ClipboardRetentionPolicy: Codable, Equatable, Sendable {
+    static let maxFetchLimit = 10_000
+    static let maxStoredItemsLimit = 1_000_000
+    static let maxAgeDaysLimit = 36_500
+
     let fetchLimit: Int
     let maxStoredItems: Int?
     let maxAgeDays: Int?
@@ -44,9 +48,32 @@ struct ClipboardRetentionPolicy: Codable, Equatable, Sendable {
         maxStoredItems: Int? = nil,
         maxAgeDays: Int? = nil
     ) {
-        self.fetchLimit = max(1, fetchLimit)
-        self.maxStoredItems = maxStoredItems.map { max(1, $0) }
-        self.maxAgeDays = maxAgeDays.map { max(1, $0) }
+        self.fetchLimit = Self.clamp(fetchLimit, minimum: 1, maximum: Self.maxFetchLimit)
+        self.maxStoredItems = maxStoredItems.map {
+            Self.clamp($0, minimum: 1, maximum: Self.maxStoredItemsLimit)
+        }
+        self.maxAgeDays = maxAgeDays.map {
+            Self.clamp($0, minimum: 1, maximum: Self.maxAgeDaysLimit)
+        }
+    }
+
+    private static func clamp(_ value: Int, minimum: Int, maximum: Int) -> Int {
+        Swift.min(Swift.max(value, minimum), maximum)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case fetchLimit
+        case maxStoredItems
+        case maxAgeDays
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            fetchLimit: try container.decodeIfPresent(Int.self, forKey: .fetchLimit) ?? AppSettings.defaultFetchLimit,
+            maxStoredItems: try container.decodeIfPresent(Int.self, forKey: .maxStoredItems),
+            maxAgeDays: try container.decodeIfPresent(Int.self, forKey: .maxAgeDays)
+        )
     }
 
     static func load(from url: URL? = nil) -> ClipboardRetentionPolicy {
@@ -97,6 +124,7 @@ actor DatabaseManager {
     private static let sqliteBusyTimeoutMilliseconds = 5_000
     private let databaseURLOverride: URL?
     private let security: ClipboardCryptographyProviding
+    private let payloadQuotaBytes: Int
     private var retentionPolicy: ClipboardRetentionPolicy
     private var db: Connection?
     private(set) var lastFetchFailureCount = 0
@@ -150,10 +178,12 @@ actor DatabaseManager {
     init(
         databaseURL: URL? = nil,
         retentionPolicy: ClipboardRetentionPolicy = .load(),
-        security: ClipboardCryptographyProviding = SecurityManager.shared
+        security: ClipboardCryptographyProviding = SecurityManager.shared,
+        payloadQuotaBytes: Int = ClipboardResourceLimits.maxStoredPayloadBytes
     ) {
         self.databaseURLOverride = databaseURL
         self.security = security
+        self.payloadQuotaBytes = max(1, payloadQuotaBytes)
         self.retentionPolicy = retentionPolicy
     }
 
@@ -171,7 +201,16 @@ actor DatabaseManager {
             AppLogger.database.notice("Database opened at \(databaseURL.path, privacy: .public)")
 
             try SchemaMigrator(security: security).migrate(in: openedDatabase)
-            try applyRetentionPolicy(in: openedDatabase)
+            do {
+                try applyRetentionPolicyAtomically(in: openedDatabase)
+            } catch let error as ClipboardPersistenceError {
+                guard case .payloadQuotaExceeded = error else {
+                    throw error
+                }
+                AppLogger.database.notice(
+                    "Stored payloads exceed the quota because protected history is too large; keeping the database available and rejecting new over-quota saves."
+                )
+            }
 
             db = openedDatabase
             databaseStatus = .available
@@ -200,6 +239,15 @@ actor DatabaseManager {
             AppLogger.database.error("Save aborted because database is unavailable.")
             throw ClipboardPersistenceError.databaseUnavailable
         }
+        let payloadsToStore = itemPayloads.isEmpty ? [.plainText(item.content)] : itemPayloads
+        try validateCapturePayloads(payloadsToStore)
+        guard ClipboardResourceLimits.accepts(item.content) else {
+            throw ClipboardPersistenceError.payloadResourceLimitExceeded(
+                contentType: .plainText,
+                byteSize: item.content.utf8.count,
+                limit: ClipboardResourceLimits.maxPlainTextBytes
+            )
+        }
         guard let encrypted = security.encrypt(
             item.content,
             context: .itemContent(itemID: item.id)
@@ -210,6 +258,13 @@ actor DatabaseManager {
         let normalizedDisplayTitle = ClipboardItem.normalizedDisplayTitle(item.displayTitle)
         let encryptedDisplayTitle: String?
         if let normalizedDisplayTitle {
+            guard ClipboardResourceLimits.accepts(normalizedDisplayTitle) else {
+                throw ClipboardPersistenceError.payloadResourceLimitExceeded(
+                    contentType: .plainText,
+                    byteSize: normalizedDisplayTitle.utf8.count,
+                    limit: ClipboardResourceLimits.maxPlainTextBytes
+                )
+            }
             guard let encrypted = security.encrypt(
                 normalizedDisplayTitle,
                 context: .itemDisplayTitle(itemID: item.id)
@@ -223,7 +278,6 @@ actor DatabaseManager {
         }
         let contentDuplicateDigest = try duplicateDigestValue(for: item.content)
 
-        let payloadsToStore = itemPayloads.isEmpty ? [.plainText(item.content)] : itemPayloads
         var payloadInserts: [PendingPayloadInsert] = []
         for payload in payloadsToStore {
             payloadInserts.append(try payloadInsert(for: payload, itemID: item.id))
@@ -265,7 +319,9 @@ actor DatabaseManager {
                     }
                 }
                 do {
-                    try applyRetentionPolicy(in: db)
+                    try applyRetentionPolicy(in: db, protectedItemID: item.id)
+                } catch let persistenceError as ClipboardPersistenceError {
+                    throw persistenceError
                 } catch {
                     throw ClipboardPersistenceError.retentionPolicyFailed(String(describing: error))
                 }
@@ -521,6 +577,9 @@ actor DatabaseManager {
         let normalizedDisplayTitle = ClipboardItem.normalizedDisplayTitle(displayTitle)
         let encryptedDisplayTitle: String?
         if let normalizedDisplayTitle {
+            guard ClipboardResourceLimits.accepts(normalizedDisplayTitle) else {
+                return false
+            }
             guard let encrypted = security.encrypt(
                 normalizedDisplayTitle,
                 context: .itemDisplayTitle(itemID: itemID)
@@ -653,6 +712,9 @@ actor DatabaseManager {
     }
 
     private func clipboardItem(from itemRow: Row, in db: Connection) throws -> ClipboardItem? {
+        guard itemRow[content].utf8.count <= ClipboardResourceLimits.maxPlainTextBytes * 4 else {
+            return nil
+        }
         guard let decrypted = security.decrypt(
             itemRow[content],
             context: .itemContent(itemID: itemRow[id])
@@ -661,6 +723,9 @@ actor DatabaseManager {
         }
         let decryptedDisplayTitle: String?
         if let encryptedDisplayTitle = itemRow[displayTitle] {
+            guard encryptedDisplayTitle.utf8.count <= ClipboardResourceLimits.maxPlainTextBytes * 4 else {
+                return nil
+            }
             guard let decrypted = security.decrypt(
                 encryptedDisplayTitle,
                 context: .itemDisplayTitle(itemID: itemRow[id])
@@ -709,7 +774,7 @@ actor DatabaseManager {
         ensureDatabaseSetup()
         guard let db else { return }
         do {
-            try applyRetentionPolicy(in: db)
+            try applyRetentionPolicyAtomically(in: db)
         } catch {
             AppLogger.database.error("Apply updated retention policy error: \(String(describing: error), privacy: .public)")
         }
@@ -819,6 +884,15 @@ actor DatabaseManager {
     }
 
     private func payloadInsert(for payload: ClipboardPayload, itemID: UUID) throws -> PendingPayloadInsert {
+        let limit = ClipboardResourceLimits.maxBytes(for: payload.contentType)
+        guard ClipboardResourceLimits.accepts(payload.data, for: payload.contentType) else {
+            AppLogger.database.error("Save aborted because payload exceeded resource limits.")
+            throw ClipboardPersistenceError.payloadResourceLimitExceeded(
+                contentType: payload.contentType,
+                byteSize: payload.data.count,
+                limit: limit
+            )
+        }
         guard let encryptedPayload = encryptedBase64PayloadData(
             for: payload.data,
             itemID: itemID,
@@ -848,6 +922,10 @@ actor DatabaseManager {
     }
 
     private func clipboardPayload(from row: Row) -> ClipboardPayload? {
+        let contentType = ClipboardContentType(rawValue: row[payloadContentType]) ?? .unknown
+        guard row[payloadEncryptedData].utf8.count <= ClipboardResourceLimits.maxBytes(for: contentType) * 4 else {
+            return nil
+        }
         guard let decrypted = security.decrypt(
             row[payloadEncryptedData],
             context: .payloadData(itemID: row[payloadItemID], payloadID: row[payloadID])
@@ -857,7 +935,9 @@ actor DatabaseManager {
         guard let data = Data(base64Encoded: decrypted) else {
             return nil
         }
-        let contentType = ClipboardContentType(rawValue: row[payloadContentType]) ?? .unknown
+        guard ClipboardResourceLimits.accepts(data, for: contentType) else {
+            return nil
+        }
         return ClipboardPayload(
             id: row[payloadID],
             contentType: contentType,
@@ -875,22 +955,101 @@ actor DatabaseManager {
         )
     }
 
-    private func applyRetentionPolicy(in db: Connection) throws {
-        if let maxAgeDays = retentionPolicy.maxAgeDays,
-           let cutoff = Calendar.current.date(byAdding: .day, value: -maxAgeDays, to: Date()) {
+    private func applyRetentionPolicy(in db: Connection, protectedItemID: UUID? = nil) throws {
+        if let configuredMaxAgeDays = retentionPolicy.maxAgeDays {
+            let maxAgeDays = max(1, min(configuredMaxAgeDays, ClipboardRetentionPolicy.maxAgeDaysLimit))
+            guard let cutoff = Calendar.current.date(byAdding: .day, value: -maxAgeDays, to: Date()) else {
+                throw ClipboardPersistenceError.retentionPolicyFailed("保持期間の計算に失敗しました。")
+            }
             let oldIDs = try db.prepare(items.filter(timestamp < cutoff && isFavorite == false)).map { $0[id] }
             for itemID in oldIDs {
                 try deleteItemRows(withID: itemID, in: db)
             }
         }
 
-        if let maxStoredItems = retentionPolicy.maxStoredItems {
+        if let configuredMaxStoredItems = retentionPolicy.maxStoredItems {
+            let maxStoredItems = max(1, min(configuredMaxStoredItems, ClipboardRetentionPolicy.maxStoredItemsLimit))
             let itemIDs = try db.prepare(items.filter(isFavorite == false).order(timestamp.desc)).map { $0[id] }
             let idsToDelete = Array(itemIDs.dropFirst(maxStoredItems))
             for itemID in idsToDelete {
                 try deleteItemRows(withID: itemID, in: db)
             }
         }
+
+        try enforcePayloadQuota(in: db, protectedItemID: protectedItemID)
+    }
+
+    private func applyRetentionPolicyAtomically(in db: Connection, protectedItemID: UUID? = nil) throws {
+        try db.run("BEGIN IMMEDIATE TRANSACTION")
+        do {
+            try applyRetentionPolicy(in: db, protectedItemID: protectedItemID)
+            try db.run("COMMIT TRANSACTION")
+        } catch {
+            _ = try? db.run("ROLLBACK TRANSACTION")
+            throw error
+        }
+    }
+
+    private func validateCapturePayloads(_ payloads: [ClipboardPayload]) throws {
+        var totalBytes = 0
+        for payload in payloads {
+            let remaining = ClipboardResourceLimits.maxCaptureBytes - totalBytes
+            guard payload.byteSize <= remaining else {
+                let overflowingTotal = payload.byteSize > Int.max - totalBytes
+                    ? Int.max
+                    : totalBytes + payload.byteSize
+                throw ClipboardPersistenceError.captureResourceLimitExceeded(
+                    totalBytes: overflowingTotal,
+                    limit: ClipboardResourceLimits.maxCaptureBytes
+                )
+            }
+            totalBytes += payload.byteSize
+        }
+    }
+
+    private func enforcePayloadQuota(in db: Connection, protectedItemID: UUID?) throws {
+        var totalBytes = 0
+        for row in try db.prepare(payloads.select(payloadByteSize)) {
+            let bytes = max(0, row[payloadByteSize])
+            if bytes > Int.max - totalBytes {
+                totalBytes = Int.max
+                break
+            }
+            totalBytes += bytes
+        }
+        guard totalBytes > payloadQuotaBytes else { return }
+
+        var candidatesQuery = items.filter(isFavorite == false)
+        if let protectedItemID {
+            candidatesQuery = candidatesQuery.filter(id != protectedItemID)
+        }
+        let candidates = try db.prepare(candidatesQuery.order(lastCapturedAt.asc, timestamp.asc))
+        for row in candidates {
+            guard totalBytes > payloadQuotaBytes else { break }
+            let itemID = row[id]
+            let itemBytes = try payloadBytes(for: itemID, in: db)
+            try deleteItemRows(withID: itemID, in: db)
+            totalBytes = totalBytes > itemBytes ? totalBytes - itemBytes : 0
+        }
+
+        guard totalBytes <= payloadQuotaBytes else {
+            throw ClipboardPersistenceError.payloadQuotaExceeded(
+                totalBytes: totalBytes,
+                limit: payloadQuotaBytes
+            )
+        }
+    }
+
+    private func payloadBytes(for itemID: UUID, in db: Connection) throws -> Int {
+        var totalBytes = 0
+        for row in try db.prepare(payloads.select(payloadByteSize).filter(payloadItemID == itemID)) {
+            let bytes = max(0, row[payloadByteSize])
+            if bytes > Int.max - totalBytes {
+                return Int.max
+            }
+            totalBytes += bytes
+        }
+        return totalBytes
     }
 
     private func deleteItemRows(withID itemID: UUID, in db: Connection) throws {

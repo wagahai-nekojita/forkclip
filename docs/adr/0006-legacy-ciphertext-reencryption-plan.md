@@ -2,16 +2,16 @@
 
 ## Status
 
-Accepted
+Accepted — implemented in schema 12 migration
 
 ## Context
 
-Forkclip currently reads two encrypted row forms:
+Forkclip previously had two encrypted row forms:
 
 - legacy ciphertext: AES-GCM ciphertext without the `forkclip-aad-v1:` prefix;
 - current ciphertext: AES-GCM ciphertext with the `forkclip-aad-v1:` prefix and row identity authenticated data.
 
-Legacy ciphertext remains readable so existing history can load after the authenticated-data encryption change. Current item rows are tied to `clipboard_items/<itemID>/content`, and current payload rows are tied to `clipboard_payloads/<itemID>/<payloadID>/encrypted_data`.
+Legacy ciphertext was readable after the authenticated-data encryption change, but it was not bound to a SQLite row. Current item rows are tied to `clipboard_items/<itemID>/content`, and current payload rows are tied to `clipboard_payloads/<itemID>/<payloadID>/encrypted_data`.
 
 Before removing legacy read support or changing encryption envelopes again, Forkclip needs a safe plan to rewrite legacy rows to the current authenticated form.
 
@@ -19,19 +19,20 @@ Before removing legacy read support or changing encryption envelopes again, Fork
 
 Legacy ciphertext detection is deterministic: any encrypted item or payload value that does not start with `forkclip-aad-v1:` is treated as legacy for re-encryption planning. Values with the prefix must be opened only with the expected row context.
 
-The first implementation should add a schema migration step that scans both encrypted item content and encrypted payload data. It should rewrite only legacy values:
+Schema migration 12 scans every encrypted item, Display Title, and payload row and rewrites only legacy values:
 
 - item content is decrypted through the legacy read path and re-encrypted with `.itemContent(itemID:)`;
+- Display Title is decrypted through the legacy read path and re-encrypted with `.itemDisplayTitle(itemID:)`;
 - payload data is decrypted through the legacy read path and re-encrypted with `.payloadData(itemID:payloadID:)`;
 - current prefixed ciphertext is left unchanged.
 
 The migration must follow ADR 0005. It must run in a transaction for SQLite row rewrites and advance `user_version` only after every selected row is rewritten successfully. If any legacy row cannot be decrypted or re-encrypted, the migration must abort, keep the previous `user_version`, leave persistence unavailable, and leave existing data readable by the old app version or recoverable from backup.
 
-Legacy read support must stay in place for at least one release after the rewrite migration ships. Removing legacy read support requires separate evidence that upgraded databases contain no legacy encrypted rows.
+The compatibility API is migration-only: normal context-bound reads reject unprefixed ciphertext. Removing `decryptLegacy` requires separate evidence that upgraded databases contain no legacy encrypted rows.
 
 ## Required Tests
 
-The implementation PR must include mixed-data tests:
+The implementation includes mixed-data tests:
 
 - a database with legacy item content and current payload data;
 - a database with current item content and legacy payload data;
@@ -65,16 +66,13 @@ Benefits:
 Costs:
 
 - The next implementation needs careful fixture setup for mixed ciphertext rows.
-- Legacy read support remains temporarily even after rewrite migration ships.
+- Legacy decryption is isolated to the migration path; normal reads no longer accept unbound ciphertext.
 - Rewriting every legacy encrypted row may be expensive for large histories, so the implementation should avoid unrelated cleanup in the same PR.
 
 ## Required Follow-up Issues
 
-- Implement the dedicated legacy ciphertext rewrite migration with mixed-row tests.
 - After release evidence, create a separate Issue to evaluate removing legacy read support.
 
 ## Validation
 
-This ADR is design-only. No runtime validation is required for this PR.
-
-Implementation PRs must run the relevant Swift tests from `docs/developer/validation.md`, including focused mixed legacy/current database migration tests.
+The implementation PR ran the relevant Swift tests from `docs/developer/validation.md`, including focused mixed legacy/current database migration tests and rollback cases. Future changes must preserve those tests.

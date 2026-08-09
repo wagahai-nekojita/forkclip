@@ -6,6 +6,9 @@ enum ImageThumbnailGenerator {
     static let maxPixelSize = 384
 
     static func thumbnail(from data: Data, maxPixelSize: Int = Self.maxPixelSize) -> NSImage? {
+        guard ClipboardResourceLimits.accepts(data, for: .image) else {
+            return nil
+        }
         let sourceOptions = [
             kCGImageSourceShouldCache: false
         ] as CFDictionary

@@ -6,9 +6,46 @@ struct AutoPasteTarget: Equatable, Sendable {
     let processIdentifier: pid_t
     let bundleIdentifier: String?
     let localizedName: String?
+    let launchDate: Date?
+
+    init(
+        processIdentifier: pid_t,
+        bundleIdentifier: String?,
+        localizedName: String?,
+        launchDate: Date? = nil
+    ) {
+        self.processIdentifier = processIdentifier
+        self.bundleIdentifier = bundleIdentifier
+        self.localizedName = localizedName
+        self.launchDate = launchDate
+    }
 
     var displayName: String {
         localizedName ?? bundleIdentifier ?? "前面のアプリ"
+    }
+
+    func matches(
+        processIdentifier: pid_t,
+        bundleIdentifier: String?,
+        launchDate: Date?
+    ) -> Bool {
+        guard self.processIdentifier == processIdentifier,
+              let expectedBundleIdentifier = self.bundleIdentifier,
+              let bundleIdentifier,
+              expectedBundleIdentifier == bundleIdentifier,
+              let expectedLaunchDate = self.launchDate,
+              let launchDate else {
+            return false
+        }
+        return expectedLaunchDate == launchDate
+    }
+
+    func matches(_ application: NSRunningApplication) -> Bool {
+        matches(
+            processIdentifier: application.processIdentifier,
+            bundleIdentifier: application.bundleIdentifier,
+            launchDate: application.launchDate
+        )
     }
 }
 
@@ -28,19 +65,23 @@ final class WorkspaceAutoPasteCoordinator: AutoPasteCoordinating {
 
     func captureTarget() -> AutoPasteTarget? {
         guard let application = NSWorkspace.shared.frontmostApplication,
-              application.bundleIdentifier != ownBundleIdentifier else {
+              let bundleIdentifier = application.bundleIdentifier,
+              bundleIdentifier != ownBundleIdentifier,
+              application.launchDate != nil else {
             return nil
         }
         return AutoPasteTarget(
             processIdentifier: application.processIdentifier,
-            bundleIdentifier: application.bundleIdentifier,
-            localizedName: application.localizedName
+            bundleIdentifier: bundleIdentifier,
+            localizedName: application.localizedName,
+            launchDate: application.launchDate
         )
     }
 
     func paste(to target: AutoPasteTarget) async -> Bool {
         guard let application = NSRunningApplication(processIdentifier: target.processIdentifier),
-              application.bundleIdentifier != ownBundleIdentifier else {
+              application.bundleIdentifier != ownBundleIdentifier,
+              target.matches(application) else {
             return false
         }
 
@@ -48,6 +89,11 @@ final class WorkspaceAutoPasteCoordinator: AutoPasteCoordinating {
         guard didActivate else { return false }
 
         try? await Task.sleep(nanoseconds: 120_000_000)
+        guard let currentFrontmost = NSWorkspace.shared.frontmostApplication,
+              currentFrontmost.bundleIdentifier != ownBundleIdentifier,
+              target.matches(currentFrontmost) else {
+            return false
+        }
         return sendPasteShortcut()
     }
 

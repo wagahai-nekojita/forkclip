@@ -39,7 +39,18 @@ Clipboard capture starts from `NSPasteboard` through a small pasteboard abstract
 
 The pipeline skips unsupported pasteboard-only formats instead of storing unknown raw data. It also respects private mode, application blacklist rules, and the system concealed pasteboard marker before reading and saving new payload data.
 
-Copy-back writes the saved compatible representations to the system pasteboard. Auto Paste is intentionally copy-first: Forkclip copies the selected item, then attempts to return focus to the previously active app and send Paste when macOS Accessibility permission allows it. If that paste attempt fails, the item remains copied for manual paste.
+Capture is bounded before encryption: plain text, URL/file URLs, rich text,
+images, and the aggregate event each have byte limits, while images also have
+dimension and decoded-pixel limits. A missing source bundle identifier fails
+closed. The monitor records the source identity in the same poll as the
+pasteboard change count, and the manager takes an immutable snapshot before
+handing the event to asynchronous processing. A clipboard change during that
+snapshot is discarded, so neither a later frontmost-app switch nor a later
+pasteboard write can change the identity of the saved row.
+If one representation exceeds a resource limit but another remains valid, the
+valid payload is saved and the diagnostics panel reports a partial save.
+
+Copy-back writes the saved compatible representations to the system pasteboard. Auto Paste is intentionally copy-first: Forkclip copies the selected item, then attempts to return focus to the previously active app and send Paste when macOS Accessibility permission allows it. The target process ID, bundle ID, and launch date are checked before activation and immediately before the shortcut. If that paste attempt fails, the item remains copied for manual paste.
 
 ## Persistence
 
@@ -49,13 +60,22 @@ Copy-back writes the saved compatible representations to the system pasteboard. 
 - `clipboard_payloads` stores per-format payload data, pasteboard type, content type, byte size, and rank.
 - folder tables store manual organization metadata and item assignments.
 
-`SchemaMigrator` owns additive schema changes and representative rollback behavior. Migrations use SQLite transactions where possible and keep future broad storage, Keychain, and database-file encryption changes behind explicit ADRs and validation requirements.
+`SchemaMigrator` owns additive schema changes and representative rollback behavior. Migrations use SQLite transactions where possible and keep future broad storage, Keychain, and database-file encryption changes behind explicit ADRs and validation requirements. Schema 12 rewrites legacy unbound ciphertext for item content, Display Titles, and payload rows to row-bound AES-GCM ciphertext before advancing `user_version`; a failed rewrite leaves the previous version in place.
+
+`DatabaseManager` reapplies the same payload limits at the persistence boundary,
+keeps SQLite in WAL mode with a busy timeout, and caps both the aggregate capture
+budget and stored payload quota. When the quota is exceeded it removes the
+least recently captured non-favorite history first, with creation time as a
+tie-breaker, protecting the item currently being saved.
+Favorite-only over-quota databases remain open; a new save is rejected, and
+startup/manual cleanup is transactional so a failed cleanup cannot leave a
+partial deletion.
 
 ## Privacy Boundaries
 
 Forkclip is local-first. Clipboard contents are not sent to external services by the app.
 
-Before persistence, clipboard text, URL text, file URL data, RTF, HTML, image bytes, and Display Titles are encrypted with CryptoKit AES-GCM. The symmetric key is stored in the user's login Keychain. New encrypted rows bind ciphertext to row identity with authenticated data so item content, Display Titles, and payload bytes are tied to their expected item and payload IDs.
+Before persistence, clipboard text, URL text, file URL data, RTF, HTML, image bytes, and Display Titles are encrypted with CryptoKit AES-GCM. The symmetric key is stored in the user's login Keychain. New encrypted rows bind ciphertext to row identity with authenticated data so item content, Display Titles, and payload bytes are tied to their expected item and payload IDs. Normal reads reject legacy unbound ciphertext; the compatibility decryptor is reserved for the transactional schema 12 rewrite.
 
 Queryable metadata remains plaintext only where the app needs it for local behavior, such as timestamps, content type, pasteboard type, byte size, flags, folder metadata, and schema version. This is not the same as whole-database encryption. SQLCipher, App Sandbox defaults, Keychain descriptor migration, and planned key rotation are documented as deferred hardening topics.
 
@@ -89,5 +109,6 @@ Release signing and Hardened Runtime checks exist as explicit scripts, but missi
 - [ADR 0008: Sandbox Storage Migration Plan](adr/0008-sandbox-storage-migration-plan.md)
 - [ADR 0009: Keychain Migration Plan](adr/0009-keychain-migration-plan.md)
 - [ADR 0010: Public App Distribution Hardening Blockers](adr/0010-public-app-distribution-hardening-blockers.md)
+- [ADR 0011: Clipboard Resource and Identity Bounds](adr/0011-clipboard-security-resource-bounds.md)
 
 Start with the [ADR index](adr/README.md) for implementation status and recommended reading order.

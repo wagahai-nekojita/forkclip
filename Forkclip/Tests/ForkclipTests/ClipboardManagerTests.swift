@@ -1431,6 +1431,198 @@ final class ClipboardManagerTests: XCTestCase {
         XCTAssertTrue(feedbackEvents.isEmpty)
     }
 
+    func testUnknownSourceApplicationFailsClosedWithoutReadingPayload() async {
+        let pasteboard = FakePasteboard(changeCount: 0, stringValue: nil)
+        let store = FakeClipboardStore()
+        let manager = await makeManager(
+            pasteboard: pasteboard,
+            store: store,
+            workspace: FakeFrontmostApplicationProvider(bundleID: nil)
+        )
+
+        pasteboard.write("source cannot be identified")
+        await manager.pollClipboardForTests()
+
+        XCTAssertTrue(store.savedItems.isEmpty)
+        XCTAssertEqual(manager.diagnostics.lastSaveStatus, .sourceApplicationUnknownSkipped)
+        XCTAssertEqual(pasteboard.payloadReadCount, 0)
+    }
+
+    func testOversizedPlainTextIsSkippedBeforePersistence() async {
+        let pasteboard = FakePasteboard(changeCount: 0, stringValue: nil)
+        let store = FakeClipboardStore()
+        let manager = await makeManager(pasteboard: pasteboard, store: store)
+        let oversizedText = String(repeating: "x", count: ClipboardResourceLimits.maxPlainTextBytes + 1)
+
+        pasteboard.write(oversizedText)
+        await manager.pollClipboardForTests()
+
+        XCTAssertTrue(store.savedItems.isEmpty)
+        XCTAssertEqual(manager.diagnostics.lastSaveStatus, .resourceLimitSkipped)
+        XCTAssertEqual(pasteboard.stringReadCount, 1)
+        XCTAssertTrue(manager.diagnostics.lastSaveError?.contains(NSPasteboard.PasteboardType.string.rawValue) == true)
+    }
+
+    func testPlainTextResourceLimitUsesUTF8ByteCount() {
+        let multibyteCharacter = "あ"
+        let bytesPerCharacter = multibyteCharacter.utf8.count
+        let acceptedText = String(repeating: multibyteCharacter, count: ClipboardResourceLimits.maxPlainTextBytes / bytesPerCharacter)
+        let rejectedText = acceptedText + multibyteCharacter
+
+        XCTAssertTrue(ClipboardResourceLimits.accepts(acceptedText))
+        XCTAssertFalse(ClipboardResourceLimits.accepts(rejectedText))
+    }
+
+    func testOversizedImageIsSkippedBeforePersistence() async {
+        let pasteboard = FakePasteboard(changeCount: 0, stringValue: nil)
+        let store = FakeClipboardStore()
+        let manager = await makeManager(pasteboard: pasteboard, store: store)
+
+        pasteboard.writeData(Data(repeating: 0, count: ClipboardResourceLimits.maxImageBytes + 1), forType: .png)
+        await manager.pollClipboardForTests()
+
+        XCTAssertTrue(store.savedItems.isEmpty)
+        XCTAssertEqual(manager.diagnostics.lastSaveStatus, .resourceLimitSkipped)
+        XCTAssertTrue(manager.diagnostics.lastSaveError?.contains(NSPasteboard.PasteboardType.png.rawValue) == true)
+    }
+
+    func testPartialResourceLimitCaptureReportsDroppedPayloadWhileSavingValidPayload() async {
+        let pasteboard = FakePasteboard(changeCount: 0, stringValue: nil)
+        let store = FakeClipboardStore()
+        let manager = await makeManager(pasteboard: pasteboard, store: store)
+
+        pasteboard.writeDataByType(
+            [.png: Data(repeating: 0, count: ClipboardResourceLimits.maxImageBytes + 1)],
+            stringsByType: [.string: "valid text"],
+            types: [.string, .png]
+        )
+        await manager.pollClipboardForTests()
+
+        XCTAssertEqual(store.savedItems.count, 1)
+        XCTAssertEqual(store.savedPayloadsForFirstItem().map(\.contentType), [.plainText])
+        XCTAssertEqual(manager.diagnostics.lastSaveStatus, .partialResourceLimitSaved)
+        XCTAssertTrue(manager.diagnostics.lastSaveError?.contains(NSPasteboard.PasteboardType.png.rawValue) == true)
+    }
+
+    func testMonitorBindsSourceIdentityAtChangeNotificationTime() async {
+        let pasteboard = FakePasteboard(changeCount: 0, stringValue: nil)
+        let store = FakeClipboardStore()
+        let scheduler = ManualClipboardMonitorScheduler()
+        let workspace = FakeFrontmostApplicationProvider(bundleID: "com.example.editor")
+        let manager = await makeManager(
+            pasteboard: pasteboard,
+            store: store,
+            workspace: workspace,
+            monitorScheduler: scheduler
+        )
+        manager.startMonitoring()
+
+        pasteboard.write("captured before focus changed")
+        scheduler.tick()
+        workspace.bundleID = "com.agilebits.onepassword"
+        await manager.waitForClipboardProcessingForTests()
+
+        XCTAssertEqual(store.savedItems.count, 1)
+        XCTAssertEqual(store.savedItems.first?.bundleID, "com.example.editor")
+        XCTAssertEqual(manager.diagnostics.lastSaveStatus, .saveSucceeded)
+    }
+
+    func testClipboardEventUsesImmutableSnapshotWhenPasteboardChangesBeforeAsyncProcessing() async {
+        let pasteboard = FakePasteboard(changeCount: 0, stringValue: nil)
+        let store = FakeClipboardStore()
+        let scheduler = ManualClipboardMonitorScheduler()
+        let workspace = FakeFrontmostApplicationProvider(bundleID: "com.example.editor")
+        let manager = await makeManager(
+            pasteboard: pasteboard,
+            store: store,
+            workspace: workspace,
+            monitorScheduler: scheduler
+        )
+        manager.startMonitoring()
+
+        pasteboard.write("allowed copy")
+        scheduler.tick()
+        workspace.bundleID = "com.agilebits.onepassword"
+        pasteboard.write("secret copy")
+        await manager.waitForClipboardProcessingForTests()
+
+        XCTAssertEqual(store.savedItems.map(\.content), ["allowed copy"])
+        XCTAssertEqual(store.savedItems.first?.bundleID, "com.example.editor")
+        XCTAssertEqual(manager.diagnostics.lastSaveStatus, .saveSucceeded)
+    }
+
+    func testClipboardChangeDuringSnapshotIsDiscarded() async {
+        let pasteboard = FakePasteboard(changeCount: 0, stringValue: nil)
+        let store = FakeClipboardStore()
+        let scheduler = ManualClipboardMonitorScheduler()
+        let manager = await makeManager(
+            pasteboard: pasteboard,
+            store: store,
+            monitorScheduler: scheduler
+        )
+        manager.startMonitoring()
+
+        pasteboard.write("first copy")
+        var didMutate = false
+        pasteboard.onPayloadRead = {
+            guard !didMutate else { return }
+            didMutate = true
+            pasteboard.write("second copy")
+        }
+        scheduler.tick()
+        await manager.waitForClipboardProcessingForTests()
+
+        XCTAssertTrue(store.savedItems.isEmpty)
+        XCTAssertEqual(manager.diagnostics.lastSaveStatus, .clipboardChangedDuringCaptureSkipped)
+    }
+
+    func testAutoPasteTargetRequiresMatchingProcessAndLaunchIdentity() {
+        let launchDate = Date(timeIntervalSince1970: 42)
+        let target = AutoPasteTarget(
+            processIdentifier: 42,
+            bundleIdentifier: "com.example.editor",
+            localizedName: "Editor",
+            launchDate: launchDate
+        )
+
+        XCTAssertTrue(target.matches(
+            processIdentifier: 42,
+            bundleIdentifier: "com.example.editor",
+            launchDate: launchDate
+        ))
+        XCTAssertFalse(target.matches(
+            processIdentifier: 43,
+            bundleIdentifier: "com.example.editor",
+            launchDate: launchDate
+        ))
+        XCTAssertFalse(target.matches(
+            processIdentifier: 42,
+            bundleIdentifier: "com.example.editor",
+            launchDate: launchDate.addingTimeInterval(1)
+        ))
+        XCTAssertFalse(target.matches(
+            processIdentifier: 42,
+            bundleIdentifier: "com.example.editor",
+            launchDate: nil
+        ))
+    }
+
+    func testAutoPasteTargetRejectsUnknownBundleIdentity() {
+        let launchDate = Date(timeIntervalSince1970: 42)
+        let target = AutoPasteTarget(
+            processIdentifier: 42,
+            bundleIdentifier: nil,
+            localizedName: "Unknown",
+            launchDate: launchDate
+        )
+
+        XCTAssertFalse(target.matches(
+            processIdentifier: 42,
+            bundleIdentifier: nil,
+            launchDate: launchDate
+        ))
+    }
+
     func testConcealedPasteboardTypeIsIgnoredWithoutReadingPayload() async {
         let pasteboard = FakePasteboard(changeCount: 0, stringValue: nil)
         let store = FakeClipboardStore()
@@ -1529,7 +1721,11 @@ final class ClipboardManagerTests: XCTestCase {
         XCTAssertEqual(ClipboardStatusFormatter.monitorText(.monitoring), "監視中")
         XCTAssertEqual(ClipboardStatusFormatter.operationText(.privateModeSkipped), "プライベートモードで未保存")
         XCTAssertEqual(ClipboardStatusFormatter.operationText(.blacklistedApplicationIgnored), "除外アプリのため未保存")
+        XCTAssertEqual(ClipboardStatusFormatter.operationText(.sourceApplicationUnknownSkipped), "コピー元アプリを確認できないため未保存")
+        XCTAssertEqual(ClipboardStatusFormatter.operationText(.clipboardChangedDuringCaptureSkipped), "クリップボード変更競合のため未保存")
         XCTAssertEqual(ClipboardStatusFormatter.operationText(.concealedContentSkipped), "機微マーカー付きのため未保存")
+        XCTAssertEqual(ClipboardStatusFormatter.operationText(.resourceLimitSkipped), "容量制限のため未保存")
+        XCTAssertEqual(ClipboardStatusFormatter.operationText(.partialResourceLimitSaved), "容量超過の形式を除いて一部保存")
         XCTAssertEqual(ClipboardStatusFormatter.operationText(.unsupportedContentSkipped), "未対応形式のため未保存")
         XCTAssertEqual(ClipboardStatusFormatter.operationText(.duplicateRecorded), "重複を記録")
         XCTAssertEqual(ClipboardStatusFormatter.operationText(.saveFailed), "保存失敗")
@@ -1713,6 +1909,7 @@ private final class FakePasteboard: PasteboardProviding {
     var setDataResult = true
     var fallbackImageDataValue: Data?
     var monitoredChangeCountError: Error?
+    var onPayloadRead: (() -> Void)?
     private(set) var stringReadCount = 0
     private(set) var dataReadCount = 0
     private(set) var fallbackImageReadCount = 0
@@ -1744,6 +1941,8 @@ private final class FakePasteboard: PasteboardProviding {
 
     func string(forType type: NSPasteboard.PasteboardType) -> String? {
         stringReadCount += 1
+        onPayloadRead?()
+        onPayloadRead = nil
         if let string = stringValues[type] {
             return string
         }
@@ -1752,6 +1951,8 @@ private final class FakePasteboard: PasteboardProviding {
 
     func data(forType type: NSPasteboard.PasteboardType) -> Data? {
         dataReadCount += 1
+        onPayloadRead?()
+        onPayloadRead = nil
         if let data = dataValues[type] {
             return data
         }
@@ -2119,8 +2320,12 @@ private final class FakeSecurityProvider: SecurityProviding {
 }
 
 @MainActor
-private struct FakeFrontmostApplicationProvider: FrontmostApplicationProviding {
-    let bundleID: String?
+private final class FakeFrontmostApplicationProvider: FrontmostApplicationProviding {
+    var bundleID: String?
+
+    init(bundleID: String?) {
+        self.bundleID = bundleID
+    }
 
     func frontmostBundleIdentifier() -> String? {
         bundleID
