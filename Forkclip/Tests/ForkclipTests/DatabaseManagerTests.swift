@@ -1697,6 +1697,128 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertFalse(fetched.contains(where: { $0.id == oldItem.id }))
     }
 
+    func testOverQuotaFavoriteDatabaseRemainsAvailableAndRejectsNewSaveAtomically() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let databaseURL = tempDirectory.appendingPathComponent("forkclip-test.sqlite")
+        let favoriteItem = ClipboardItem(
+            id: UUID(),
+            content: "favorite over quota",
+            timestamp: Date(timeIntervalSince1970: 2),
+            isFavorite: true
+        )
+        let oldItem = ClipboardItem(
+            id: UUID(),
+            content: "old nonfavorite",
+            timestamp: Date(timeIntervalSince1970: 1)
+        )
+        let payload = { (count: Int) in
+            [ClipboardPayload(
+                contentType: .plainText,
+                pasteboardType: .string,
+                data: Data(repeating: 0x41, count: count),
+                rank: 0
+            )]
+        }
+
+        do {
+            let retentionPolicy = ClipboardRetentionPolicy(fetchLimit: 10, maxStoredItems: nil, maxAgeDays: nil)
+            let seedManager = makeDatabaseManager(
+                databaseURL: databaseURL,
+                retentionPolicy: retentionPolicy,
+                payloadQuotaBytes: 100
+            )
+            try await seedManager.saveItem(
+                oldItem,
+                payloads: payload(4),
+                originBundleID: nil,
+                secret: false,
+                migrated: false
+            )
+            try await seedManager.saveItem(
+                favoriteItem,
+                payloads: payload(12),
+                originBundleID: nil,
+                secret: false,
+                migrated: false
+            )
+        }
+
+        let manager = makeDatabaseManager(
+            databaseURL: databaseURL,
+            retentionPolicy: ClipboardRetentionPolicy(fetchLimit: 10, maxStoredItems: nil, maxAgeDays: nil),
+            payloadQuotaBytes: 10
+        )
+        let diagnostics = await manager.diagnosticsSnapshot()
+        XCTAssertEqual(diagnostics.databaseStatus, .available)
+        let openedItems = await manager.fetchAll()
+        XCTAssertEqual(Set(openedItems.map(\.id)), Set([oldItem.id, favoriteItem.id]))
+
+        let newItem = ClipboardItem(id: UUID(), content: "new", timestamp: Date(timeIntervalSince1970: 3))
+        await assertThrowsPersistenceError {
+            try await manager.saveItem(
+                newItem,
+                payloads: payload(1),
+                originBundleID: nil,
+                secret: false,
+                migrated: false
+            )
+        } verify: { error in
+            guard case .payloadQuotaExceeded = error else {
+                return XCTFail("Expected payloadQuotaExceeded, got \(error)")
+            }
+        }
+
+        let afterFailedSave = await manager.fetchAll()
+        XCTAssertEqual(Set(afterFailedSave.map(\.id)), Set([oldItem.id, favoriteItem.id]))
+        XCTAssertTrue(afterFailedSave.contains(where: { $0.id == favoriteItem.id && $0.isFavorite }))
+    }
+
+    func testSaveItemRejectsAggregatePayloadsBeforePersistence() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let databaseURL = tempDirectory.appendingPathComponent("forkclip-test.sqlite")
+        let manager = makeDatabaseManager(databaseURL: databaseURL)
+        let payloadSize = ClipboardResourceLimits.maxCaptureBytes / 2 + 1
+        let payloads = [
+            ClipboardPayload(
+                contentType: .image,
+                pasteboardType: .png,
+                data: Data(repeating: 0x41, count: payloadSize),
+                rank: 0
+            ),
+            ClipboardPayload(
+                contentType: .image,
+                pasteboardType: .png,
+                data: Data(repeating: 0x42, count: payloadSize),
+                rank: 1
+            )
+        ]
+
+        await assertThrowsPersistenceError {
+            try await manager.saveItem(
+                ClipboardItem(id: UUID(), content: "aggregate payloads", timestamp: Date()),
+                payloads: payloads,
+                originBundleID: nil,
+                secret: false,
+                migrated: false
+            )
+        } verify: { error in
+            guard case .captureResourceLimitExceeded(let totalBytes, let limit) = error else {
+                return XCTFail("Expected captureResourceLimitExceeded, got \(error)")
+            }
+            XCTAssertGreaterThan(totalBytes, limit)
+            XCTAssertEqual(limit, ClipboardResourceLimits.maxCaptureBytes)
+        }
+
+        let fetched = await manager.fetchAll()
+        XCTAssertTrue(fetched.isEmpty)
+    }
+
     func testFetchAllIncludesFavoritesOutsideFetchLimit() async throws {
         let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)

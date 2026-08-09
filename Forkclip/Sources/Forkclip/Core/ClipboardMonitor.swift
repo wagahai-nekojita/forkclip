@@ -367,9 +367,23 @@ struct ClipboardPasteboardMetadata: Equatable {
     }
 }
 
-struct ClipboardChangeEvent: Equatable, Sendable {
+struct ClipboardChangeEvent: Equatable {
     let changeCount: Int
     let sourceBundleIdentifier: String?
+    let capture: ClipboardCaptureSnapshot?
+    let metadata: ClipboardPasteboardMetadata?
+
+    init(
+        changeCount: Int,
+        sourceBundleIdentifier: String?,
+        capture: ClipboardCaptureSnapshot? = nil,
+        metadata: ClipboardPasteboardMetadata? = nil
+    ) {
+        self.changeCount = changeCount
+        self.sourceBundleIdentifier = sourceBundleIdentifier
+        self.capture = capture
+        self.metadata = metadata
+    }
 }
 
 @MainActor

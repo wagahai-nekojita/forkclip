@@ -30,7 +30,9 @@ struct AutoPasteTarget: Equatable, Sendable {
         launchDate: Date?
     ) -> Bool {
         guard self.processIdentifier == processIdentifier,
-              self.bundleIdentifier == bundleIdentifier,
+              let expectedBundleIdentifier = self.bundleIdentifier,
+              let bundleIdentifier,
+              expectedBundleIdentifier == bundleIdentifier,
               let expectedLaunchDate = self.launchDate,
               let launchDate else {
             return false
@@ -63,13 +65,14 @@ final class WorkspaceAutoPasteCoordinator: AutoPasteCoordinating {
 
     func captureTarget() -> AutoPasteTarget? {
         guard let application = NSWorkspace.shared.frontmostApplication,
-              application.bundleIdentifier != ownBundleIdentifier,
+              let bundleIdentifier = application.bundleIdentifier,
+              bundleIdentifier != ownBundleIdentifier,
               application.launchDate != nil else {
             return nil
         }
         return AutoPasteTarget(
             processIdentifier: application.processIdentifier,
-            bundleIdentifier: application.bundleIdentifier,
+            bundleIdentifier: bundleIdentifier,
             localizedName: application.localizedName,
             launchDate: application.launchDate
         )

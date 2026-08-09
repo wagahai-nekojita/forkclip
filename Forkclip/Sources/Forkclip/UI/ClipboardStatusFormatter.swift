@@ -58,6 +58,8 @@ enum ClipboardStatusFormatter {
             return "除外アプリのため未保存"
         case .sourceApplicationUnknownSkipped:
             return "コピー元アプリを確認できないため未保存"
+        case .clipboardChangedDuringCaptureSkipped:
+            return "クリップボード変更競合のため未保存"
         case .concealedContentSkipped:
             return "機微マーカー付きのため未保存"
         case .resourceLimitSkipped:

@@ -99,6 +99,7 @@ enum ClipboardPersistenceError: LocalizedError, Equatable, Sendable {
     case displayTitleEncryptionFailed(SecurityManager.SecurityError?)
     case itemDigestFailed(SecurityManager.SecurityError?)
     case payloadResourceLimitExceeded(contentType: ClipboardContentType, byteSize: Int, limit: Int)
+    case captureResourceLimitExceeded(totalBytes: Int, limit: Int)
     case payloadEncryptionFailed(contentType: ClipboardContentType, pasteboardType: String, securityError: SecurityManager.SecurityError?)
     case itemWriteFailed(String)
     case payloadWriteFailed(contentType: ClipboardContentType, pasteboardType: String, underlying: String)
@@ -118,6 +119,8 @@ enum ClipboardPersistenceError: LocalizedError, Equatable, Sendable {
             return securityError?.localizedDescription ?? "重複検出用の要約生成に失敗しました。"
         case .payloadResourceLimitExceeded(let contentType, let byteSize, let limit):
             return "ペイロードが容量制限を超えています。(\(contentType.rawValue), \(byteSize) bytes > \(limit) bytes)"
+        case .captureResourceLimitExceeded(let totalBytes, let limit):
+            return "1回のクリップボード保存容量上限を超えています。(\(totalBytes) bytes > \(limit) bytes)"
         case .payloadEncryptionFailed(let contentType, let pasteboardType, let securityError):
             let baseMessage = securityError?.localizedDescription ?? "ペイロードの暗号化に失敗しました。"
             return "\(baseMessage) (\(contentType.rawValue)/\(pasteboardType))"
@@ -408,8 +411,9 @@ class ClipboardManager: ObservableObject {
 
     func handleClipboardChange(event: ClipboardChangeEvent) {
         lastProcessedChangeDate = Date()
+        let preparedEvent = prepareCaptureEvent(event)
         pendingClipboardTask = Task { @MainActor [weak self] in
-            await self?.handleNewClipboardItem(event: event)
+            await self?.handleNewClipboardItem(event: preparedEvent)
         }
     }
 
@@ -462,7 +466,7 @@ class ClipboardManager: ObservableObject {
             return
         }
 
-        let metadata = ClipboardPasteboardMetadata.read(from: pasteboard)
+        let metadata = event.metadata ?? ClipboardPasteboardMetadata.read(from: pasteboard)
         if metadata.hasConcealedContent {
             lastSaveStatus = .concealedContentSkipped
             lastSaveError = metadata.concealedTypeNames.joined(separator: ",")
@@ -472,7 +476,14 @@ class ClipboardManager: ObservableObject {
             return
         }
 
-        let capture = ClipboardCaptureSnapshot.read(from: pasteboard, metadata: metadata)
+        guard let capture = event.capture ?? captureSnapshotIfCurrent(event, metadata: metadata) else {
+            lastSaveStatus = .clipboardChangedDuringCaptureSkipped
+            lastSaveError = "change-count-mismatch"
+            AppLogger.app.debug("Ignored clipboard change because the pasteboard changed during capture.")
+            await refreshDiagnostics()
+            updateStatusMessage()
+            return
+        }
 
         if !capture.unsupportedTypeNames.isEmpty {
             AppLogger.app.debug("Unsupported pasteboard types ignored: \(capture.unsupportedTypeNames.joined(separator: ","), privacy: .public)")
@@ -554,6 +565,52 @@ class ClipboardManager: ObservableObject {
         cacheCopyBackPayloads(capture.payloads, for: newItem.id)
         await loadHistory()
         feedbackHandler?(.externalCaptureSaved)
+    }
+
+    private func prepareCaptureEvent(_ event: ClipboardChangeEvent) -> ClipboardChangeEvent {
+        guard event.capture == nil,
+              ignoredChangeCount != event.changeCount,
+              !isPrivateMode,
+              let bundleID = event.sourceBundleIdentifier,
+              !security.isApplicationBlacklisted(bundleID) else {
+            return event
+        }
+
+        guard pasteboard.changeCount == event.changeCount else {
+            return event
+        }
+        let metadata = ClipboardPasteboardMetadata.read(from: pasteboard)
+        guard !metadata.hasConcealedContent else {
+            return ClipboardChangeEvent(
+                changeCount: event.changeCount,
+                sourceBundleIdentifier: event.sourceBundleIdentifier,
+                metadata: metadata
+            )
+        }
+        guard let capture = captureSnapshotIfCurrent(event, metadata: metadata) else {
+            return event
+        }
+        return ClipboardChangeEvent(
+            changeCount: event.changeCount,
+            sourceBundleIdentifier: event.sourceBundleIdentifier,
+            capture: capture,
+            metadata: metadata
+        )
+    }
+
+    private func captureSnapshotIfCurrent(
+        _ event: ClipboardChangeEvent,
+        metadata: ClipboardPasteboardMetadata? = nil
+    ) -> ClipboardCaptureSnapshot? {
+        guard pasteboard.changeCount == event.changeCount else {
+            return nil
+        }
+        let metadata = metadata ?? ClipboardPasteboardMetadata.read(from: pasteboard)
+        let capture = ClipboardCaptureSnapshot.read(from: pasteboard, metadata: metadata)
+        guard pasteboard.changeCount == event.changeCount else {
+            return nil
+        }
+        return capture
     }
 
     private func captureDiagnosticsDescription(_ capture: ClipboardCaptureSnapshot) -> String {

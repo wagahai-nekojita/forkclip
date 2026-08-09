@@ -43,8 +43,10 @@ Capture is bounded before encryption: plain text, URL/file URLs, rich text,
 images, and the aggregate event each have byte limits, while images also have
 dimension and decoded-pixel limits. A missing source bundle identifier fails
 closed. The monitor records the source identity in the same poll as the
-pasteboard change count, so a later frontmost-app switch cannot change the
-blacklist decision for that event.
+pasteboard change count, and the manager takes an immutable snapshot before
+handing the event to asynchronous processing. A clipboard change during that
+snapshot is discarded, so neither a later frontmost-app switch nor a later
+pasteboard write can change the identity of the saved row.
 
 Copy-back writes the saved compatible representations to the system pasteboard. Auto Paste is intentionally copy-first: Forkclip copies the selected item, then attempts to return focus to the previously active app and send Paste when macOS Accessibility permission allows it. The target process ID, bundle ID, and launch date are checked before activation and immediately before the shortcut. If that paste attempt fails, the item remains copied for manual paste.
 
@@ -59,10 +61,12 @@ Copy-back writes the saved compatible representations to the system pasteboard. 
 `SchemaMigrator` owns additive schema changes and representative rollback behavior. Migrations use SQLite transactions where possible and keep future broad storage, Keychain, and database-file encryption changes behind explicit ADRs and validation requirements. Schema 12 rewrites legacy unbound ciphertext for item content, Display Titles, and payload rows to row-bound AES-GCM ciphertext before advancing `user_version`; a failed rewrite leaves the previous version in place.
 
 `DatabaseManager` reapplies the same payload limits at the persistence boundary,
-keeps SQLite in WAL mode with a busy timeout, and caps the stored payload quota.
-When the quota is exceeded it removes the oldest non-favorite history first,
-protecting the item currently being saved. Favorites are not automatic cleanup
-targets.
+keeps SQLite in WAL mode with a busy timeout, and caps both the aggregate capture
+budget and stored payload quota. When the quota is exceeded it removes the
+oldest non-favorite history first, protecting the item currently being saved.
+Favorite-only over-quota databases remain open; a new save is rejected, and
+startup/manual cleanup is transactional so a failed cleanup cannot leave a
+partial deletion.
 
 ## Privacy Boundaries
 

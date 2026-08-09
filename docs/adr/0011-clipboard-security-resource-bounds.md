@@ -33,21 +33,27 @@ boundaries:
 
 Oversized or over-dimensioned payloads are skipped before encryption. Image
 thumbnails use ImageIO thumbnail decoding after the same checks and are kept in
-a bounded cache. SQLite persistence checks the limits again so callers other
-than the pasteboard monitor cannot bypass them.
+a bounded cache. SQLite persistence checks both each payload and the aggregate
+20 MiB capture budget again, so callers other than the pasteboard monitor
+cannot bypass either boundary.
 
 When the stored payload quota is exceeded, Forkclip removes the oldest
 non-favorite items first. The item currently being saved is protected from that
-cleanup. Favorite items are never removed by automatic quota or age cleanup. If
-favorite payloads plus the protected new item cannot fit, the save fails rather
-than deleting a favorite or silently discarding the new item.
+cleanup. Favorite items are never removed by automatic quota or age cleanup.
+Startup and manual retention cleanup run in a transaction. If protected
+favorite payloads still exceed the quota, the database remains available and a
+new over-quota save fails rather than deleting a favorite or partially deleting
+other history.
 
 The clipboard monitor captures the source bundle identifier in the same poll as
-the pasteboard change count. The manager uses that captured identity for the
-blacklist decision and stored row. If the source app cannot be identified,
+the pasteboard change count. Before scheduling asynchronous processing, the
+manager takes an immutable, change-count-bound pasteboard snapshot after the
+source passes the blacklist check. If the pasteboard changes during that
+snapshot, the event is discarded. If the source app cannot be identified,
 Forkclip fails closed before reading payload bytes. Auto Paste stores the target
 process ID, bundle ID, and launch date, then verifies all three before focus
-activation and again immediately before sending Command-V.
+activation and again immediately before sending Command-V. A missing bundle ID
+cannot form an Auto Paste target.
 
 Retention policy decoding calls the normalizing initializer explicitly and
 clamps fetch count, item count, and age to safe ranges. JSON decoding cannot
@@ -66,10 +72,15 @@ partially migrated rows.
 
 - oversized text and image captures are skipped without persistence;
 - unknown source identity fails closed without reading payload bytes;
-- a source identity captured before a focus switch remains bound to the saved row;
-- Auto Paste target matching rejects a different process, bundle, or launch;
+- a source identity and immutable pasteboard snapshot captured before a focus or
+  clipboard switch remain bound to the saved row;
+- Auto Paste target matching rejects a different process, bundle, launch, or
+  unknown bundle identity;
 - retention JSON with extreme integers is clamped;
 - quota cleanup removes the oldest non-favorite while preserving favorites;
+- an over-quota favorite database opens, rejects a new over-quota save, and
+  leaves failed cleanup atomic;
+- persistence rejects an aggregate payload set above the 20 MiB capture budget;
 - legacy item, Display Title, and payload ciphertext are rewritten with the
   expected row context, and a failed rewrite does not advance `user_version`;
 - WAL and busy-timeout pragmas remain enabled for every database connection.

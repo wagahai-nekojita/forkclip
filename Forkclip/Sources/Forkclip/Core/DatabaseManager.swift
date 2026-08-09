@@ -201,7 +201,16 @@ actor DatabaseManager {
             AppLogger.database.notice("Database opened at \(databaseURL.path, privacy: .public)")
 
             try SchemaMigrator(security: security).migrate(in: openedDatabase)
-            try applyRetentionPolicy(in: openedDatabase)
+            do {
+                try applyRetentionPolicyAtomically(in: openedDatabase)
+            } catch let error as ClipboardPersistenceError {
+                guard case .payloadQuotaExceeded = error else {
+                    throw error
+                }
+                AppLogger.database.notice(
+                    "Stored payloads exceed the quota because protected history is too large; keeping the database available and rejecting new over-quota saves."
+                )
+            }
 
             db = openedDatabase
             databaseStatus = .available
@@ -230,6 +239,8 @@ actor DatabaseManager {
             AppLogger.database.error("Save aborted because database is unavailable.")
             throw ClipboardPersistenceError.databaseUnavailable
         }
+        let payloadsToStore = itemPayloads.isEmpty ? [.plainText(item.content)] : itemPayloads
+        try validateCapturePayloads(payloadsToStore)
         guard ClipboardResourceLimits.accepts(item.content) else {
             throw ClipboardPersistenceError.payloadResourceLimitExceeded(
                 contentType: .plainText,
@@ -267,7 +278,6 @@ actor DatabaseManager {
         }
         let contentDuplicateDigest = try duplicateDigestValue(for: item.content)
 
-        let payloadsToStore = itemPayloads.isEmpty ? [.plainText(item.content)] : itemPayloads
         var payloadInserts: [PendingPayloadInsert] = []
         for payload in payloadsToStore {
             payloadInserts.append(try payloadInsert(for: payload, itemID: item.id))
@@ -310,6 +320,8 @@ actor DatabaseManager {
                 }
                 do {
                     try applyRetentionPolicy(in: db, protectedItemID: item.id)
+                } catch let persistenceError as ClipboardPersistenceError {
+                    throw persistenceError
                 } catch {
                     throw ClipboardPersistenceError.retentionPolicyFailed(String(describing: error))
                 }
@@ -762,7 +774,7 @@ actor DatabaseManager {
         ensureDatabaseSetup()
         guard let db else { return }
         do {
-            try applyRetentionPolicy(in: db)
+            try applyRetentionPolicyAtomically(in: db)
         } catch {
             AppLogger.database.error("Apply updated retention policy error: \(String(describing: error), privacy: .public)")
         }
@@ -965,6 +977,34 @@ actor DatabaseManager {
         }
 
         try enforcePayloadQuota(in: db, protectedItemID: protectedItemID)
+    }
+
+    private func applyRetentionPolicyAtomically(in db: Connection, protectedItemID: UUID? = nil) throws {
+        try db.run("BEGIN IMMEDIATE TRANSACTION")
+        do {
+            try applyRetentionPolicy(in: db, protectedItemID: protectedItemID)
+            try db.run("COMMIT TRANSACTION")
+        } catch {
+            _ = try? db.run("ROLLBACK TRANSACTION")
+            throw error
+        }
+    }
+
+    private func validateCapturePayloads(_ payloads: [ClipboardPayload]) throws {
+        var totalBytes = 0
+        for payload in payloads {
+            let remaining = ClipboardResourceLimits.maxCaptureBytes - totalBytes
+            guard payload.byteSize <= remaining else {
+                let overflowingTotal = payload.byteSize > Int.max - totalBytes
+                    ? Int.max
+                    : totalBytes + payload.byteSize
+                throw ClipboardPersistenceError.captureResourceLimitExceeded(
+                    totalBytes: overflowingTotal,
+                    limit: ClipboardResourceLimits.maxCaptureBytes
+                )
+            }
+            totalBytes += payload.byteSize
+        }
     }
 
     private func enforcePayloadQuota(in db: Connection, protectedItemID: UUID?) throws {
