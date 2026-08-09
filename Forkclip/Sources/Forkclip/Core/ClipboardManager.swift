@@ -524,8 +524,7 @@ class ClipboardManager: ObservableObject {
                await store.updateSecretState(for: updatedItem.id, isSecret: isSecret) {
                 updatedItem.isSecret = isSecret
             }
-            lastSaveStatus = .duplicateRecorded
-            lastSaveError = nil
+            recordSuccessfulCapture(capture, status: .duplicateRecorded)
             cacheCopyBackPayloads(capture.payloads, for: updatedItem.id)
             await loadHistory()
             return
@@ -557,8 +556,7 @@ class ClipboardManager: ObservableObject {
             return
         }
 
-        lastSaveStatus = .saveSucceeded
-        lastSaveError = nil
+        recordSuccessfulCapture(capture, status: .saveSucceeded)
         if newItem.primaryContentType == .image {
             prepareImageThumbnail(for: newItem.id, from: capture.payloads)
         }
@@ -617,6 +615,19 @@ class ClipboardManager: ObservableObject {
         let supported = capture.contentTypes.map(\.rawValue)
         let unsupported = capture.unsupportedTypeNames
         return (supported + unsupported + capture.resourceLimitTypeNames).joined(separator: ",")
+    }
+
+    private func recordSuccessfulCapture(
+        _ capture: ClipboardCaptureSnapshot,
+        status: ClipboardOperationStatus
+    ) {
+        if capture.hasResourceLimitViolation {
+            lastSaveStatus = .partialResourceLimitSaved
+            lastSaveError = captureDiagnosticsDescription(capture)
+        } else {
+            lastSaveStatus = status
+            lastSaveError = nil
+        }
     }
 
     private func loadInitialState() async {

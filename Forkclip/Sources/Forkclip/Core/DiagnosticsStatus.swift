@@ -23,6 +23,7 @@ enum ClipboardOperationStatus: Equatable, Sendable {
     case clipboardChangedDuringCaptureSkipped
     case concealedContentSkipped
     case resourceLimitSkipped
+    case partialResourceLimitSaved
     case unsupportedContentSkipped
     case emptyStringIgnored
     case duplicateIgnored

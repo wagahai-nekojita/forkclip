@@ -31,19 +31,22 @@ boundaries:
 | Image dimensions | 16,384 pixels per side and 40 million pixels total |
 | In-memory thumbnail cache | 128 entries |
 
-Oversized or over-dimensioned payloads are skipped before encryption. Image
-thumbnails use ImageIO thumbnail decoding after the same checks and are kept in
-a bounded cache. SQLite persistence checks both each payload and the aggregate
-20 MiB capture budget again, so callers other than the pasteboard monitor
-cannot bypass either boundary.
+Oversized or over-dimensioned payloads are skipped before encryption. If a
+capture still has valid payloads after that filtering, Forkclip saves the valid
+payloads and reports a partial, capacity-limited result in diagnostics instead
+of claiming an unqualified success. Image thumbnails use ImageIO thumbnail
+decoding after the same checks and are kept in a bounded cache. SQLite
+persistence checks both each payload and the aggregate 20 MiB capture budget
+again, so callers other than the pasteboard monitor cannot bypass either
+boundary.
 
-When the stored payload quota is exceeded, Forkclip removes the oldest
-non-favorite items first. The item currently being saved is protected from that
-cleanup. Favorite items are never removed by automatic quota or age cleanup.
-Startup and manual retention cleanup run in a transaction. If protected
-favorite payloads still exceed the quota, the database remains available and a
-new over-quota save fails rather than deleting a favorite or partially deleting
-other history.
+When the stored payload quota is exceeded, Forkclip removes the least recently
+captured non-favorite items first, using the original timestamp only as a tie
+breaker. The item currently being saved is protected from that cleanup.
+Favorite items are never removed by automatic quota or age cleanup. Startup and
+manual retention cleanup run in a transaction. If protected favorite payloads
+still exceed the quota, the database remains available and a new over-quota
+save fails rather than deleting a favorite or partially deleting other history.
 
 The clipboard monitor captures the source bundle identifier in the same poll as
 the pasteboard change count. Before scheduling asynchronous processing, the
@@ -71,13 +74,16 @@ partially migrated rows.
 ## Required Tests
 
 - oversized text and image captures are skipped without persistence;
+- a mixed capture saves valid payloads while reporting the dropped
+  capacity-limited formats;
 - unknown source identity fails closed without reading payload bytes;
 - a source identity and immutable pasteboard snapshot captured before a focus or
   clipboard switch remain bound to the saved row;
 - Auto Paste target matching rejects a different process, bundle, launch, or
   unknown bundle identity;
 - retention JSON with extreme integers is clamped;
-- quota cleanup removes the oldest non-favorite while preserving favorites;
+- quota cleanup removes the least recently captured non-favorite while
+  preserving favorites;
 - an over-quota favorite database opens, rejects a new over-quota save, and
   leaves failed cleanup atomic;
 - persistence rejects an aggregate payload set above the 20 MiB capture budget;

@@ -1463,6 +1463,16 @@ final class ClipboardManagerTests: XCTestCase {
         XCTAssertTrue(manager.diagnostics.lastSaveError?.contains(NSPasteboard.PasteboardType.string.rawValue) == true)
     }
 
+    func testPlainTextResourceLimitUsesUTF8ByteCount() {
+        let multibyteCharacter = "あ"
+        let bytesPerCharacter = multibyteCharacter.utf8.count
+        let acceptedText = String(repeating: multibyteCharacter, count: ClipboardResourceLimits.maxPlainTextBytes / bytesPerCharacter)
+        let rejectedText = acceptedText + multibyteCharacter
+
+        XCTAssertTrue(ClipboardResourceLimits.accepts(acceptedText))
+        XCTAssertFalse(ClipboardResourceLimits.accepts(rejectedText))
+    }
+
     func testOversizedImageIsSkippedBeforePersistence() async {
         let pasteboard = FakePasteboard(changeCount: 0, stringValue: nil)
         let store = FakeClipboardStore()
@@ -1473,6 +1483,24 @@ final class ClipboardManagerTests: XCTestCase {
 
         XCTAssertTrue(store.savedItems.isEmpty)
         XCTAssertEqual(manager.diagnostics.lastSaveStatus, .resourceLimitSkipped)
+        XCTAssertTrue(manager.diagnostics.lastSaveError?.contains(NSPasteboard.PasteboardType.png.rawValue) == true)
+    }
+
+    func testPartialResourceLimitCaptureReportsDroppedPayloadWhileSavingValidPayload() async {
+        let pasteboard = FakePasteboard(changeCount: 0, stringValue: nil)
+        let store = FakeClipboardStore()
+        let manager = await makeManager(pasteboard: pasteboard, store: store)
+
+        pasteboard.writeDataByType(
+            [.png: Data(repeating: 0, count: ClipboardResourceLimits.maxImageBytes + 1)],
+            stringsByType: [.string: "valid text"],
+            types: [.string, .png]
+        )
+        await manager.pollClipboardForTests()
+
+        XCTAssertEqual(store.savedItems.count, 1)
+        XCTAssertEqual(store.savedPayloadsForFirstItem().map(\.contentType), [.plainText])
+        XCTAssertEqual(manager.diagnostics.lastSaveStatus, .partialResourceLimitSaved)
         XCTAssertTrue(manager.diagnostics.lastSaveError?.contains(NSPasteboard.PasteboardType.png.rawValue) == true)
     }
 
@@ -1697,6 +1725,7 @@ final class ClipboardManagerTests: XCTestCase {
         XCTAssertEqual(ClipboardStatusFormatter.operationText(.clipboardChangedDuringCaptureSkipped), "クリップボード変更競合のため未保存")
         XCTAssertEqual(ClipboardStatusFormatter.operationText(.concealedContentSkipped), "機微マーカー付きのため未保存")
         XCTAssertEqual(ClipboardStatusFormatter.operationText(.resourceLimitSkipped), "容量制限のため未保存")
+        XCTAssertEqual(ClipboardStatusFormatter.operationText(.partialResourceLimitSaved), "容量超過の形式を除いて一部保存")
         XCTAssertEqual(ClipboardStatusFormatter.operationText(.unsupportedContentSkipped), "未対応形式のため未保存")
         XCTAssertEqual(ClipboardStatusFormatter.operationText(.duplicateRecorded), "重複を記録")
         XCTAssertEqual(ClipboardStatusFormatter.operationText(.saveFailed), "保存失敗")

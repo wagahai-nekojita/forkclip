@@ -40,8 +40,7 @@ enum ClipboardResourceLimits {
     }
 
     static func accepts(_ text: String, for contentType: ClipboardContentType = .plainText) -> Bool {
-        guard let data = text.data(using: .utf8) else { return false }
-        return data.count <= maxBytes(for: contentType)
+        text.utf8.count <= maxBytes(for: contentType)
     }
 
     static func imageMetadataExceedsLimits(_ data: Data) -> Bool {

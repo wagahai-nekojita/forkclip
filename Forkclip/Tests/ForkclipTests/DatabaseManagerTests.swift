@@ -1697,6 +1697,57 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertFalse(fetched.contains(where: { $0.id == oldItem.id }))
     }
 
+    func testPayloadQuotaUsesLastCapturedAtBeforeCreationTimestamp() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let databaseURL = tempDirectory.appendingPathComponent("forkclip-test.sqlite")
+        let retentionPolicy = ClipboardRetentionPolicy(fetchLimit: 10, maxStoredItems: nil, maxAgeDays: nil)
+        let oldItem = ClipboardItem(id: UUID(), content: "recaptured", timestamp: Date(timeIntervalSince1970: 1))
+        let recentItem = ClipboardItem(id: UUID(), content: "recently created", timestamp: Date(timeIntervalSince1970: 2))
+        let payload = {
+            [ClipboardPayload(
+                id: UUID(),
+                contentType: .plainText,
+                pasteboardType: .string,
+                data: Data(repeating: 0x41, count: 6),
+                rank: 0
+            )]
+        }
+
+        do {
+            let seedManager = makeDatabaseManager(
+                databaseURL: databaseURL,
+                retentionPolicy: retentionPolicy,
+                payloadQuotaBytes: 100
+            )
+            try await seedManager.saveItem(oldItem, payloads: payload(), originBundleID: nil, secret: false, migrated: false)
+            try await seedManager.saveItem(recentItem, payloads: payload(), originBundleID: nil, secret: false, migrated: false)
+
+            let recaptured = await seedManager.recordDuplicateCapture(
+                content: oldItem.content,
+                primaryContentType: .plainText,
+                bundleID: nil,
+                at: Date(timeIntervalSince1970: 100)
+            )
+            XCTAssertEqual(recaptured?.lastCapturedAt, Date(timeIntervalSince1970: 100))
+        }
+
+        let manager = makeDatabaseManager(
+            databaseURL: databaseURL,
+            retentionPolicy: retentionPolicy,
+            payloadQuotaBytes: 12
+        )
+        let newItem = ClipboardItem(id: UUID(), content: "new capture", timestamp: Date(timeIntervalSince1970: 3))
+        try await manager.saveItem(newItem, payloads: payload(), originBundleID: nil, secret: false, migrated: false)
+
+        let fetched = await manager.fetchAll()
+        XCTAssertTrue(fetched.contains(where: { $0.id == oldItem.id }))
+        XCTAssertTrue(fetched.contains(where: { $0.id == newItem.id }))
+        XCTAssertFalse(fetched.contains(where: { $0.id == recentItem.id }))
+    }
+
     func testOverQuotaFavoriteDatabaseRemainsAvailableAndRejectsNewSaveAtomically() async throws {
         let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)

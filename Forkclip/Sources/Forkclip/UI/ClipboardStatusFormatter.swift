@@ -64,6 +64,8 @@ enum ClipboardStatusFormatter {
             return "機微マーカー付きのため未保存"
         case .resourceLimitSkipped:
             return "容量制限のため未保存"
+        case .partialResourceLimitSaved:
+            return "容量超過の形式を除いて一部保存"
         case .unsupportedContentSkipped:
             return "未対応形式のため未保存"
         case .emptyStringIgnored:

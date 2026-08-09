@@ -1023,7 +1023,7 @@ actor DatabaseManager {
         if let protectedItemID {
             candidatesQuery = candidatesQuery.filter(id != protectedItemID)
         }
-        let candidates = try db.prepare(candidatesQuery.order(timestamp.asc))
+        let candidates = try db.prepare(candidatesQuery.order(lastCapturedAt.asc, timestamp.asc))
         for row in candidates {
             guard totalBytes > payloadQuotaBytes else { break }
             let itemID = row[id]

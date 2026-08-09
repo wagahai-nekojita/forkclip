@@ -10,6 +10,7 @@ These are local development release notes for repository-built Forkclip app bund
 - Removed automatic legacy data and Keychain lookup from production startup; earlier local data remains untouched but is not imported by Forkclip.
 - Rebuilt app icons, `AppIcon.icns`, and the menu bar template icon from `Forkclip/Assets/forkclip-icon.png`.
 - Added clipboard resource bounds, bounded image thumbnails, immutable change-bound snapshots, source-identity and Auto Paste race checks, transactional non-favorite payload-quota cleanup, retention-policy normalization, and schema 12 legacy-ciphertext re-encryption.
+- Capacity-limited mixed captures now report partial saves, and payload-quota cleanup follows the most recent capture time rather than only original creation time.
 
 ## 0.4.0
 

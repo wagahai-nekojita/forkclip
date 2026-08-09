@@ -47,6 +47,8 @@ pasteboard change count, and the manager takes an immutable snapshot before
 handing the event to asynchronous processing. A clipboard change during that
 snapshot is discarded, so neither a later frontmost-app switch nor a later
 pasteboard write can change the identity of the saved row.
+If one representation exceeds a resource limit but another remains valid, the
+valid payload is saved and the diagnostics panel reports a partial save.
 
 Copy-back writes the saved compatible representations to the system pasteboard. Auto Paste is intentionally copy-first: Forkclip copies the selected item, then attempts to return focus to the previously active app and send Paste when macOS Accessibility permission allows it. The target process ID, bundle ID, and launch date are checked before activation and immediately before the shortcut. If that paste attempt fails, the item remains copied for manual paste.
 
@@ -63,7 +65,8 @@ Copy-back writes the saved compatible representations to the system pasteboard. 
 `DatabaseManager` reapplies the same payload limits at the persistence boundary,
 keeps SQLite in WAL mode with a busy timeout, and caps both the aggregate capture
 budget and stored payload quota. When the quota is exceeded it removes the
-oldest non-favorite history first, protecting the item currently being saved.
+least recently captured non-favorite history first, with creation time as a
+tie-breaker, protecting the item currently being saved.
 Favorite-only over-quota databases remain open; a new save is rejected, and
 startup/manual cleanup is transactional so a failed cleanup cannot leave a
 partial deletion.

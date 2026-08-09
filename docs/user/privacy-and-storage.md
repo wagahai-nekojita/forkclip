@@ -47,8 +47,10 @@ Forkclip places limits on clipboard work before encryption and again before
 database writes: plain text and URL/file URLs are limited to 1 MiB, RTF/HTML to
 4 MiB, one image to 16 MiB, and one clipboard change to 20 MiB total. Images
 also have dimension and decoded-pixel limits. Oversized content is skipped and
-shown as a capacity-limited save result in diagnostics. Thumbnails use bounded
-ImageIO decoding and a bounded in-memory cache.
+shown as a capacity-limited save result in diagnostics. If other
+representations of the same clipboard change fit within the limits, those
+representations are saved and diagnostics explicitly show a partial save.
+Thumbnails use bounded ImageIO decoding and a bounded in-memory cache.
 
 ## Private Mode
 
@@ -64,4 +66,4 @@ Forkclip also respects the pasteboard type marker `org.nspasteboard.ConcealedTyp
 
 ## Retention
 
-Retention settings limit stored items by count and age. The default keeps up to 100 items and removes items older than 14 days. Favorite items are protected from automatic retention cleanup, but explicit delete still removes them. Stored payloads also have a 256 MiB quota; when it is exceeded, the oldest non-favorite history is removed first. Favorites are not quota-cleanup targets. Cleanup is transactional. If protected favorites already exceed the quota, the database remains available but a new save fails instead of deleting a favorite or partially deleting older history.
+Retention settings limit stored items by count and age. The default keeps up to 100 items and removes items older than 14 days. Favorite items are protected from automatic retention cleanup, but explicit delete still removes them. Stored payloads also have a 256 MiB quota; when it is exceeded, the least recently captured non-favorite history is removed first, with creation time as a tie-breaker. Favorites are not quota-cleanup targets. Cleanup is transactional. If protected favorites already exceed the quota, the database remains available but a new save fails instead of deleting a favorite or partially deleting older history.
